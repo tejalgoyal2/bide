@@ -195,3 +195,61 @@ export function decodeTripUpdates(u8) {
   });
   return { ts, trips: out };
 }
+
+function translated(r, end) {
+  let text = '';
+  each(r, end, (f) => {
+    if (f !== 1) return false;
+    let t = '', lang = '';
+    each(r, r.end(), (f2) => {
+      if (f2 === 1) t = r.str();
+      else if (f2 === 2) lang = r.str();
+      else return false;
+    });
+    if (!text || lang.startsWith('en')) text = t;
+  });
+  return text;
+}
+
+const EFFECTS = ['', 'no service', 'reduced service', 'significant delays', 'detour', 'additional service',
+  'modified service', 'other effect', 'unknown effect', 'stop moved', 'no effect', 'accessibility issue'];
+
+// Service alerts: headline, details, affected routes and stops, active periods.
+export function decodeAlerts(u8) {
+  const r = new Reader(u8);
+  const out = [];
+  let ts = 0;
+  each(r, u8.length, (f, wt) => {
+    if (f === 1 && wt === 2) ts = header(r, r.end()).ts;
+    else if (f === 2 && wt === 2) {
+      let id = '';
+      each(r, r.end(), (f2, wt2) => {
+        if (f2 === 1 && wt2 === 2) { id = r.str(); return; }
+        if (f2 !== 5 || wt2 !== 2) return false;
+        const a = { id, header: '', description: '', effect: '', routes: [], stops: [], periods: [] };
+        each(r, r.end(), (f3) => {
+          if (f3 === 1) {
+            const p = [0, 0];
+            each(r, r.end(), (f4) => {
+              if (f4 === 1) p[0] = r.uint();
+              else if (f4 === 2) p[1] = r.uint();
+              else return false;
+            });
+            a.periods.push(p);
+          } else if (f3 === 5) {
+            each(r, r.end(), (f4) => {
+              if (f4 === 2) a.routes.push(r.str());
+              else if (f4 === 5) a.stops.push(r.str());
+              else return false;
+            });
+          } else if (f3 === 7) a.effect = EFFECTS[r.uint()] || '';
+          else if (f3 === 10) a.header = translated(r, r.end());
+          else if (f3 === 11) a.description = translated(r, r.end());
+          else return false;
+        });
+        out.push(a);
+      });
+    } else return false;
+  });
+  return { ts, alerts: out };
+}

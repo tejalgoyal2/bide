@@ -1,0 +1,30 @@
+# Every night, score the previous Victoria service day and publish it to the
+# site. Runs after the 3 am service-day boundary (Pacific time).
+name: scoreboard
+
+on:
+  schedule:
+    - cron: '40 11 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Service day to score (YYYY-MM-DD); default is yesterday in Victoria'
+        required: false
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Score and publish
+        env:
+          BIDE_KEY: ${{ secrets.BIDE_KEY }}
+        run: node pipeline/score.mjs ${{ inputs.date && format('--date {0}', inputs.date) || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scoreboard
+          path: pipeline/out/

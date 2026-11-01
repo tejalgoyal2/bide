@@ -1,11 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
-import { feedTimestamp, decodeTripUpdates } from '../shared/gtfsrt.js';
+import { feedTimestamp, decodeTripUpdates, decodeVehicles, decodeAlerts } from '../shared/gtfsrt.js';
 
 const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
 const OP = '?operatorIds=48';
 
-const CODE_VERSION = 3;
+const CODE_VERSION = 4;
 const TICK = 10_000; // vehicle feed refreshes about every 15 s
 const TRIP_EVERY = 60_000;
 const ALERT_EVERY = 300_000;
@@ -95,6 +95,7 @@ export class Recorder extends DurableObject {
     const u8 = await get(FEED + file + OP);
     const ts = feedTimestamp(u8);
     if (table === 'vp') this.live = { u8, ts, fetched: Date.now() };
+    if (table === 'al') this.alertsU8 = u8;
     // The feed often hasn't moved since the last poll; only keep new snapshots.
     if (!ts || ts === this.state[table] || full) return;
     this.state[table] = ts;
@@ -132,6 +133,75 @@ export class Recorder extends DurableObject {
 
   currentDelays() {
     return this.delays;
+  }
+
+  async alerts() {
+    let u8 = this.alertsU8;
+    if (!u8) {
+      const row = this.sql.exec('SELECT z FROM al ORDER BY ts DESC LIMIT 1').toArray()[0];
+      if (!row) return [];
+      u8 = this.alertsU8 = await gunzip(new Uint8Array(row.z));
+    }
+    const now = Date.now() / 1000;
+    return decodeAlerts(u8)
+      .alerts.filter((a) => a.description && a.periods.some(([s, e]) => (!s || s <= now) && (!e || e >= now)))
+      .map((a) => ({ ...a, routes: [...new Set(a.routes)], stops: [...new Set(a.stops)] }));
+  }
+
+  // "Victoria right now": one sentence from Groq about the city's buses,
+  // regenerated at most every 15 minutes to stay well inside the free tier.
+  async nowLine(weather) {
+    const cached = this.now || (await this.ctx.storage.get('now'));
+    if (cached && Date.now() - cached.at < 15 * 60_000) return cached;
+    if (!this.env.GROQ_API_KEY) return cached || null;
+    const live = await this.latest();
+    const v = live ? decodeVehicles(live.u8).vehicles : [];
+    const standing = v.filter((b) => b.occ >= 3).length;
+    const d = Object.values(this.delays.d || {});
+    const late = d.filter((x) => x >= 180).length;
+    const routesStanding = [...new Set(v.filter((b) => b.occ >= 3).map((b) => b.routeId.replace('-VIC', '')))].slice(0, 5);
+    const alerts = (await this.alerts()).filter((a) => a.header).map((a) => `${a.header}: ${a.description.split('\n')[0].slice(0, 140)}`);
+    const local = new Date().toLocaleString('en-CA', { timeZone: 'America/Vancouver', weekday: 'long', hour: 'numeric', minute: '2-digit' });
+    const facts = [
+      `Local time: ${local}.`,
+      `Buses on the road: ${v.length}. Standing room only: ${standing}${routesStanding.length ? ` (routes ${routesStanding.join(', ')})` : ''}.`,
+      `Trips with predictions: ${d.length}; running 3+ minutes late: ${late}.`,
+      weather ? `Weather: ${weather}.` : '',
+      alerts.length ? `Service alerts: ${alerts.slice(0, 3).join(' | ')}` : 'No service alerts.',
+    ].filter(Boolean).join('\n');
+    const ask = async (model) =>
+      fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.env.GROQ_API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          max_tokens: 90,
+          temperature: 0.6,
+          messages: [
+            {
+              role: 'system',
+              content:
+                "You write one short, warm, specific sentence (max 28 words) describing Victoria, BC's buses right now, " +
+                'like a local radio traffic line. Use only the facts given; never invent numbers, places or causes. No emoji, no hashtags.',
+            },
+            { role: 'user', content: facts },
+          ],
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+    try {
+      let res = await ask(this.env.GROQ_MODEL || 'llama-3.3-70b-versatile');
+      if (res.status === 404 || res.status === 400) res = await ask('openai/gpt-oss-20b');
+      if (!res.ok) throw new Error(`groq ${res.status}`);
+      const text = (await res.json()).choices?.[0]?.message?.content?.trim().replace(/^"|"$/g, '');
+      if (text) {
+        this.now = { text, at: Date.now() };
+        await this.ctx.storage.put('now', this.now);
+      }
+    } catch (e) {
+      this.fail(String(e.message || e));
+    }
+    return this.now || cached || null;
   }
 
   status() {
@@ -199,6 +269,36 @@ export default {
     if (url.pathname === '/api/status') {
       ctx.waitUntil(rec.ensure());
       return json(await rec.status(), 30);
+    }
+
+    if (url.pathname === '/api/alerts') {
+      return json(await rec.alerts(), 120);
+    }
+
+    if (url.pathname === '/api/now') {
+      return json(await rec.nowLine(url.searchParams.get('weather')?.slice(0, 80)), 120);
+    }
+
+    if (url.pathname === '/api/scores') {
+      const { results } = await env.DB.prepare('SELECT date, summary FROM days ORDER BY date DESC LIMIT 60').all();
+      return json(results.map((r) => ({ date: r.date, ...JSON.parse(r.summary) })), 300);
+    }
+
+    // The nightly pipeline posts each day's scoreboard and observed arrivals.
+    if (url.pathname === '/api/ingest' && req.method === 'POST') {
+      if (!env.EXPORT_KEY || req.headers.get('authorization') !== `Bearer ${env.EXPORT_KEY}`) {
+        return new Response('unauthorized', { status: 401 });
+      }
+      const body = await req.json();
+      if (body.kind === 'day') {
+        await env.DB.prepare('INSERT OR REPLACE INTO days VALUES (?, ?, ?)')
+          .bind(body.date, JSON.stringify(body.summary), Date.now())
+          .run();
+      } else if (body.kind === 'arrivals') {
+        const stmt = env.DB.prepare('INSERT OR REPLACE INTO arrivals VALUES (?, ?, ?, ?)');
+        await env.DB.batch(body.rows.slice(0, 200).map((r) => stmt.bind(body.date, r.trip, r.route, JSON.stringify(r.stops))));
+      } else return new Response('bad kind', { status: 400 });
+      return json({ ok: true });
     }
 
     if (url.pathname === '/api/export') {

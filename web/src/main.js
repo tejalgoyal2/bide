@@ -3,7 +3,7 @@ import { createWorld, shared, EXAG } from './world.js';
 import { createControls } from './controls.js';
 import { createSky } from './sky.js';
 import { createBuses, delayColor, occupancyColor, occupancyLabel } from './buses.js';
-import { createBars } from './bars.js';
+import { createNetwork } from './network.js';
 import { createLabels } from './labels.js';
 import { createWeather } from './weather.js';
 
@@ -27,8 +27,8 @@ const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 20, 300
 const world = await createWorld(scene, map);
 const sky = createSky(scene);
 const controls = createControls(camera, canvas, (x, y) => world.heightAt(x, y) * EXAG * shared.uRise.value);
-const buses = createBuses(scene, transit, world);
-const bars = createBars(scene, transit.activity, world);
+const buses = createBuses(scene, transit, world, $('tags'));
+const network = createNetwork(scene, transit);
 const labels = createLabels($('labels'), world.heightAt);
 const weather = createWeather(scene, showConditions);
 
@@ -63,7 +63,7 @@ function setHour(h, { live = false } = {}) {
   $('dial-head').style.left = `${(time.hour / 24) * 100}%`;
   $('dial-time').textContent = fmtHour(time.hour);
   $('day-type').textContent = { weekday: 'Weekday schedule', saturday: 'Saturday schedule', sunday: 'Sunday schedule' }[time.day];
-  bars.setTime(time.day, time.hour);
+  network.setTime(time.day, time.hour);
 }
 setHour(time.hour, { live: true });
 
@@ -96,7 +96,7 @@ $('play').onclick = () => {
 
 // --- layers and legend ---------------------------------------------------
 const LEGENDS = {
-  route: () => 'Each bus in its route colour',
+  route: () => 'Each route in its own colour',
   crowding: () =>
     [0, 1, 2, 3].map((o) => `<span><i style="background:${occupancyColor(o)}"></i>${occupancyLabel(o)}</span>`).join(''),
   lateness: () =>
@@ -110,8 +110,8 @@ function setMode(m) {
   $('legend').innerHTML = LEGENDS[m]();
 }
 $('mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mode);
-setMode('route');
-$('t-bars').onchange = (e) => bars.setVisible(e.target.checked);
+setMode('lateness');
+$('t-network').onchange = (e) => network.setVisible(e.target.checked);
 $('t-weather').onchange = (e) => weather.setEnabled(e.target.checked);
 $('t-labels').onchange = (e) => ($('labels').style.display = e.target.checked ? '' : 'none');
 const HOME = { x: -900, z: -2600, dist: 8200, polar: 0.92, azimuth: 0.32 };
@@ -143,7 +143,7 @@ async function loadStatus() {
     const since = first ? first.toLocaleDateString('en-CA', { timeZone: TZ, month: 'short', day: 'numeric' }) : 'today';
     const hours = first ? (Date.now() / 1000 - s.vehicles.first) / 3600 : 0;
     const days = hours / 24;
-    $('s-recorded').textContent = `Recording since ${since} · day ${Math.max(1, Math.ceil(days))} of 14`;
+
     $('score-progress').innerHTML =
       `Recording since <b>${since}</b>: <b>${s.vehicles.n.toLocaleString()}</b> snapshots of every bus position and ` +
       `<b>${s.tripUpdates.n.toLocaleString()}</b> snapshots of BC Transit's predictions so far ` +
@@ -154,6 +154,97 @@ loadStatus();
 setInterval(loadStatus, 60000);
 $('score-open').onclick = () => $('score').classList.remove('hidden');
 $('score').querySelector('.close').onclick = () => $('score').classList.add('hidden');
+
+// --- the scoreboard ---------------------------------------------------------
+const mmss = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s`);
+const dayName = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
+
+// Mean error by lead time, one line per predictor.
+function chart(buckets) {
+  const W = 500, H = 150, L = 34, B = 22, T = 8;
+  const series = [['official', '#a59c90'], ['bide', '#4f86c6'], ['bidePlus', '#e0774f']];
+  const max = Math.max(...buckets.flatMap((b) => series.map(([k]) => b[k]?.mae || 0))) * 1.08;
+  const x = (i) => L + ((W - L - 8) * (i + 0.5)) / buckets.length;
+  const y = (v) => T + (H - T - B) * (1 - v / max);
+  const grid = [0, 60, 120, 180, 240, 300, 360].filter((v) => v < max)
+    .map((v) => `<line x1="${L}" x2="${W - 4}" y1="${y(v)}" y2="${y(v)}" stroke="currentColor" stroke-opacity=".08"/><text x="${L - 6}" y="${y(v) + 3}" text-anchor="end">${v / 60}m</text>`).join('');
+  const lines = series.map(([k, c]) => {
+    const pts = buckets.map((b, i) => `${x(i)},${y(b[k]?.mae || 0)}`).join(' ');
+    return `<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2.2" stroke-linejoin="round"/>` +
+      buckets.map((b, i) => `<circle cx="${x(i)}" cy="${y(b[k]?.mae || 0)}" r="2.6" fill="${c}"/>`).join('');
+  }).join('');
+  const labels = buckets.map((b, i) => `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${b.lo}–${b.hi} min</text>`).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}">${grid}${lines}${labels}</svg>
+    <div class="key"><span><i style="background:#a59c90"></i>BC Transit</span><span><i style="background:#4f86c6"></i>bide</span><span><i style="background:#e0774f"></i>bide+</span></div>`;
+}
+
+async function loadScores() {
+  try {
+    const days = await (await fetch('/api/scores')).json();
+    if (!days.length) return;
+    const d = days[0];
+    const o = d.overall, far = d.buckets[d.buckets.length - 1];
+    const partial = d.partialFrom
+      ? ` (partial: recording began ${new Date(d.partialFrom * 1000).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })})`
+      : '';
+    // Only call it ahead when it is clearly ahead, by at least 1%.
+    const best = o.bidePlus.mae < o.official.mae * 0.99 ? 'bidePlus' : null;
+    const rows = d.buckets.map((b) => {
+      const vals = ['official', 'bide', 'bidePlus'].map((k) => b[k]?.mae ?? null);
+      const min = Math.min(...vals.filter((v) => v != null));
+      return `<tr><td>${b.lo}–${b.hi} min</td><td>${b.official.n.toLocaleString()}</td>${vals.map((v) => `<td class="${v === min ? 'win' : ''}">${mmss(v)}</td>`).join('')}</tr>`;
+    }).join('');
+    $('score-body').innerHTML = `
+      <p class="headline">${dayName(d.date)}${partial}: BC Transit's predictions missed by <em>${mmss(o.official.mae)}</em> on average,
+        and were within a minute ${o.official.within60}% of the time.
+        ${best ? `bide+ missed by <em>${mmss(o.bidePlus.mae)}</em>.` : `bide+ ${mmss(o.bidePlus.mae)}, bide ${mmss(o.bide.mae)}: not ahead yet.`}</p>
+      <p>Predictions run optimistic: made 20–30 minutes out, buses arrived <b>${mmss(-far.official.bias)}</b> later than predicted on average.</p>
+      ${chart(d.buckets)}
+      <table class="score-table">
+        <tr><th>Made</th><th>Checks</th><th>BC Transit</th><th>bide</th><th>bide+</th></tr>${rows}
+      </table>
+      <p class="muted small">${d.events.toLocaleString()} prediction checks on ${d.trips} trips and ${d.arrivals.toLocaleString()} observed arrivals.
+        ${days.length} day${days.length > 1 ? 's' : ''} scored so far; a new day is added every morning.</p>`;
+    $('score-method').textContent = d.method;
+    $('s-recorded').textContent = `${days.length} day${days.length > 1 ? 's' : ''} scored · BC Transit off by ${mmss(o.official.mae)} on average`;
+  } catch (e) {
+    console.warn('scores', e);
+  }
+}
+loadScores();
+setInterval(loadScores, 30 * 60e3);
+
+// --- Victoria right now, and service alerts ---------------------------------
+async function loadNow() {
+  try {
+    const w = weather.state.weather;
+    const q = w ? `?weather=${encodeURIComponent(`${w.temp}°C, ${w.text}, wind ${w.wind} km/h`)}` : '';
+    const n = await (await fetch('/api/now' + q)).json();
+    $('now').textContent = n?.text || '';
+  } catch { /* the line is optional */ }
+}
+setTimeout(loadNow, 2500);
+setInterval(loadNow, 5 * 60e3);
+
+async function loadAlerts() {
+  try {
+    const alerts = (await (await fetch('/api/alerts')).json()).filter((a) => a.header || a.description);
+    const chip = $('alerts-open');
+    chip.hidden = !alerts.length;
+    chip.textContent = `${alerts.length} service alert${alerts.length === 1 ? '' : 's'}`;
+    $('alerts-list').innerHTML = alerts.map((a) => `
+      <div class="alert">
+        <b>${esc(a.header || a.effect || 'Alert')}</b>
+        ${a.routes.length ? `<span class="routes">Routes ${a.routes.map((r) => esc(r.replace('-VIC', ''))).join(', ')}</span>` : ''}
+        <p>${esc(a.description.trim().slice(0, 600))}</p>
+      </div>`).join('');
+  } catch { /* stay quiet */ }
+}
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+loadAlerts();
+setInterval(loadAlerts, 5 * 60e3);
+$('alerts-open').onclick = () => $('alerts').classList.remove('hidden');
+$('alerts').querySelector('.close').onclick = () => $('alerts').classList.add('hidden');
 
 // --- picking --------------------------------------------------------------
 let selected = null;
@@ -213,11 +304,11 @@ canvas.addEventListener('pointermove', (e) => {
   if (b) {
     const r = buses.routes[b.route];
     tip.innerHTML = `<b>${r?.short ?? ''}</b> ${b.headsign || r?.name || ''}`;
-  } else if (bars.visible) {
+  } else if (network.visible) {
     const g = controls.groundAt(e.clientX, e.clientY);
-    const v = g && bars.at(g.x, -g.z);
-    if (!v || v.value < 0.5) { tip.style.opacity = 0; return; }
-    tip.innerHTML = `<b>${Math.round(v.value)}</b> scheduled bus departures an hour, around ${fmtHour(time.hour)}`;
+    const v = g && network.near(g.x, -g.z, Math.max(25, controls.state.dist / 400));
+    if (!v || v < 0.5) { tip.style.opacity = 0; return; }
+    tip.innerHTML = `<b>${Math.round(v)}</b> buses an hour scheduled here around ${fmtHour(time.hour)}`;
   } else { tip.style.opacity = 0; return; }
   tip.style.left = e.clientX + 'px';
   tip.style.top = e.clientY + 'px';
@@ -274,8 +365,8 @@ function frame() {
   shared.uFogDist.value = s.dist * 2.4 + 9000;
   sky.dome.position.copy(camera.position);
 
-  buses.update(dt, mpp);
-  bars.update(dt, s.dist);
+  buses.update(dt, mpp, camera, s.dist);
+  network.update(dt);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);
 

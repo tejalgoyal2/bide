@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..600&family=Inter:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Overpass:ital,wght@0,300..800;1,400..600&family=Overpass+Mono:wght@400..600&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/src/style.css" />
@@ -18,6 +18,7 @@
   <body>
     <canvas id="scene"></canvas>
     <div id="labels"></div>
+    <div id="tags"></div>
 
     <div id="veil">
       <div class="veil-inner">
@@ -36,17 +37,19 @@
         <span id="weather"></span>
       </div>
       <div id="tide" class="brand-meta"></div>
+      <p id="now" class="now"></p>
+      <button id="alerts-open" class="alerts-chip" hidden></button>
     </header>
 
     <aside id="layers" class="card">
       <div class="layer-title">Colour buses by</div>
       <div class="seg" id="mode">
-        <button data-mode="route" class="on">Route</button>
+        <button data-mode="lateness" class="on">Lateness</button>
         <button data-mode="crowding">Crowding</button>
-        <button data-mode="lateness">Lateness</button>
+        <button data-mode="route">Route</button>
       </div>
       <div id="legend"></div>
-      <label class="toggle"><input type="checkbox" id="t-bars" checked /><span></span>Activity columns</label>
+      <label class="toggle"><input type="checkbox" id="t-network" checked /><span></span>Service frequency</label>
       <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
       <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
       <button id="home" class="ghost">Back to the city</button>
@@ -97,21 +100,32 @@
     <article id="score" class="card hidden">
       <button class="close" aria-label="Close">×</button>
       <h2>The honest scoreboard</h2>
-      <p>
-        BC Transit publishes a predicted arrival for every bus at every stop. bide records those predictions,
-        then records when each bus actually arrived, and scores them on the same trips, stops and lead times as
-        bide's own model.
+      <p class="lede">
+        Every BC Transit arrival prediction is recorded, then checked against when the bus actually got there.
+        bide's models answer exactly the same questions, using only what was known at the time.
       </p>
-      <p id="score-progress"></p>
-      <p class="muted">
-        The first honest comparison needs about two weeks of history. Until then this card shows what has been
-        recorded so far, so nobody has to take the headline on trust.
-      </p>
+      <div id="score-body"><p class="muted">Loading the latest scored day…</p></div>
+      <details class="method">
+        <summary>How it's scored</summary>
+        <p id="score-method"></p>
+        <p>
+          <b>bide</b> is independent: it uses the timetable and the bus's own reported progress.
+          <b>bide+</b> starts from BC Transit's prediction and corrects the drift it tends to have, learned on an
+          earlier day. Settings are always learned on a previous day, never the day being scored.
+        </p>
+      </details>
+      <p id="score-progress" class="muted small"></p>
       <p class="muted small">
         Victoria sits on the traditional territories of the Lekwungen-speaking peoples, the Songhees and Esquimalt
         Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
         Transit open data. Weather: Open-Meteo. Tides: Fisheries and Oceans Canada.
       </p>
+    </article>
+
+    <article id="alerts" class="card hidden">
+      <button class="close" aria-label="Close">×</button>
+      <h2>Service alerts</h2>
+      <div id="alerts-list"></div>
     </article>
 
     <script type="module" src="/src/main.js"></script>

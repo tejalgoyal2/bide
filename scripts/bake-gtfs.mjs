@@ -1,6 +1,6 @@
 // Bakes BC Transit's Victoria schedule (GTFS) into web/public/data:
-//   transit.json  routes, route shapes, stops, and scheduled departures per
-//                 hour in hexagonal cells (the "activity" bars)
+//   transit.json  routes, route shapes, stops, and how many trips start on
+//                 each shape in each hour (the service-frequency network)
 //   trips.json    trip id -> route, shape, direction, headsign
 // Usage: node scripts/bake-gtfs.mjs [gtfs-dir]
 // Without a directory it downloads the current feed into .cache/gtfs.
@@ -11,7 +11,6 @@ import { toXY } from '../shared/geo.js';
 
 const OUT = new URL('../web/public/data/', import.meta.url);
 const URL_GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
-export const HEX = 280; // hex radius in metres
 
 let dir = process.argv[2];
 if (!dir) {
@@ -66,17 +65,6 @@ function pack(flat) {
   return out;
 }
 
-// Pointy-top axial hex coordinates for a point.
-export function hexOf(x, y, s = HEX) {
-  const q = ((Math.sqrt(3) / 3) * x - y / 3) / s;
-  const r = ((2 / 3) * y) / s;
-  let rx = Math.round(q), ry = Math.round(r), rz = Math.round(-q - r);
-  const dx = Math.abs(rx - q), dy = Math.abs(ry - r), dz = Math.abs(rz + q + r);
-  if (dx > dy && dx > dz) rx = -ry - rz;
-  else if (dy > dz) ry = -rx - rz;
-  return [rx, ry];
-}
-
 const routes = [];
 const routeIdx = new Map();
 await rows('routes.txt', (c, h) => {
@@ -129,31 +117,29 @@ for (const [sid, i] of shapeIds) {
   shapes[i] = pack(pts.flatMap(([, lon, lat]) => toXY(lon, lat)));
 }
 
-// Scheduled departures per hex per hour, for each sample day.
-const cells = new Map();
+// Trips starting on each shape in each hour, for each sample day. A trip's
+// hour is that of its first departure.
 const dayOff = { weekday: 0, saturday: 24, sunday: 48 };
-let counted = 0;
+const firstStop = new Map();
 await rows('stop_times.txt', (c, h) => {
-  const days = tripDays.get(c[h.trip_id]);
-  if (!days) return;
-  const s = stops[stopIdx.get(c[h.stop_id])];
-  if (!s) return;
-  const hour = +(c[h.departure_time] || c[h.arrival_time]).split(':')[0] % 24;
-  const [q, r] = hexOf(s[2], s[3]);
-  const key = `${q},${r}`;
-  if (!cells.has(key)) cells.set(key, [q, r, ...new Array(72).fill(0)]);
-  const cell = cells.get(key);
-  for (const d of days) cell[2 + dayOff[d] + hour]++;
-  counted++;
+  const trip = c[h.trip_id];
+  if (!tripDays.has(trip)) return;
+  const seq = +c[h.stop_sequence];
+  const f = firstStop.get(trip);
+  if (!f || seq < f.seq) firstStop.set(trip, { seq, hour: +(c[h.departure_time] || c[h.arrival_time]).split(':')[0] % 24 });
 });
-
+const freq = shapes.map(() => new Array(72).fill(0));
+for (const [trip, f] of firstStop) {
+  const si = trips[trip][1];
+  for (const d of tripDays.get(trip)) freq[si][dayOff[d] + f.hour]++;
+}
 const transit = {
   routes, stops, shapes, headsigns,
-  activity: { hex: HEX, days: DAYS, cells: [...cells.values()] },
+  freq: { days: DAYS, shapes: freq },
 };
 fs.writeFileSync(new URL('transit.json', OUT), JSON.stringify(transit));
 fs.writeFileSync(new URL('trips.json', OUT), JSON.stringify(trips));
 console.log(
   `routes ${routes.length}, stops ${stops.length}, shapes ${shapes.length}, trips ${Object.keys(trips).length}, ` +
-    `services on sample days ${svcDays.size}, departures counted ${counted}, hex cells ${cells.size}`,
+    `services on sample days ${svcDays.size}, trips on sample days ${firstStop.size}`,
 );

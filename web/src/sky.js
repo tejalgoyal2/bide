@@ -16,9 +16,11 @@ const KEYS = [
   { alt: 22, haze: '#f0e4cd', top: '#9cc9e8', amb: [0.62, 0.64, 0.7], sun: [0.72, 0.7, 0.64], night: 0 },
 ];
 
-function sunDir(alt, az) {
-  // SunCalc azimuth is measured from south, positive toward west.
-  return new THREE.Vector3(-Math.sin(az) * Math.cos(alt), Math.sin(alt), Math.cos(az) * Math.cos(alt));
+// SunCalc 2 gives degrees: altitude above the horizon, and azimuth clockwise
+// from north. World axes are x east, y up, z south.
+function sunDir(altDeg, azDeg) {
+  const alt = (altDeg * Math.PI) / 180, az = (azDeg * Math.PI) / 180;
+  return new THREE.Vector3(Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt));
 }
 
 export function createSky(scene) {
@@ -66,7 +68,7 @@ export function createSky(scene) {
 
   function set(date) {
     const sun = SunCalc.getPosition(date, LAT, LON);
-    const altDeg = (sun.altitude * 180) / Math.PI;
+    const altDeg = sun.altitude;
     let i = 0;
     while (i < KEYS.length - 2 && altDeg > KEYS[i + 1].alt) i++;
     const a = KEYS[i], b = KEYS[i + 1];
@@ -82,10 +84,10 @@ export function createSky(scene) {
     // By night the moon takes over the light (and the glint on the water).
     if (altDeg < -4) {
       const moon = SunCalc.getMoonPosition(date, LAT, LON);
-      const d = sunDir(Math.max(moon.altitude, 0.35), moon.azimuth);
+      const d = sunDir(Math.max(moon.altitude, 20), moon.azimuth);
       shared.uSun.value.copy(d);
     } else {
-      shared.uSun.value.copy(sunDir(Math.max(sun.altitude, 0.06), sun.azimuth));
+      shared.uSun.value.copy(sunDir(Math.max(sun.altitude, 3.5), sun.azimuth));
     }
     hemi.color.copy(shared.uAmbient.value).multiplyScalar(1.3);
     hemi.groundColor.copy(shared.uAmbient.value).multiplyScalar(0.6);
