@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>bide · Victoria, live</title>
+    <meta name="description" content="A living map of Victoria, BC: every bus moving right now, and an honest scoreboard of arrival predictions." />
+    <meta name="theme-color" content="#efe3cf" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..700;1,9..144,400..600&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="labels"></div>
+
+    <div id="veil">
+      <div class="veil-inner">
+        <div class="wordmark big">bide</div>
+        <div class="veil-sub">drawing Victoria<span class="dots"></span></div>
+      </div>
+    </div>
+
+    <header id="brand" class="card">
+      <div class="brand-row">
+        <span class="wordmark">bide</span>
+        <span class="brand-place">Victoria, live</span>
+      </div>
+      <div class="brand-meta">
+        <span id="clock">--:--</span>
+        <span id="weather"></span>
+      </div>
+      <div id="tide" class="brand-meta"></div>
+    </header>
+
+    <aside id="layers" class="card">
+      <div class="layer-title">Colour buses by</div>
+      <div class="seg" id="mode">
+        <button data-mode="route" class="on">Route</button>
+        <button data-mode="crowding">Crowding</button>
+        <button data-mode="lateness">Lateness</button>
+      </div>
+      <div id="legend"></div>
+      <label class="toggle"><input type="checkbox" id="t-bars" checked /><span></span>Activity columns</label>
+      <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
+      <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
+      <button id="home" class="ghost">Back to the city</button>
+    </aside>
+
+    <section id="stats" class="card">
+      <div class="stat"><b id="s-buses">–</b><span>buses on the road</span></div>
+      <div class="stat"><b id="s-standing">–</b><span>standing room only</span></div>
+      <div class="stat"><b id="s-late">–</b><span>3+ min behind</span></div>
+      <button id="score-open" class="score-teaser">
+        <span class="dot"></span>
+        <span><b>Scoreboard</b> · our predictions vs BC Transit's</span>
+        <span id="s-recorded" class="muted"></span>
+      </button>
+    </section>
+
+    <footer id="timebar" class="card">
+      <button id="play" title="Play the day">▶</button>
+      <div id="dial">
+        <div id="dial-track"></div>
+        <div id="dial-fill"></div>
+        <div id="dial-head"><span id="dial-time"></span></div>
+        <div id="dial-ticks"></div>
+      </div>
+      <button id="live" class="on">Live</button>
+      <div id="day-type"></div>
+    </footer>
+
+    <div id="tooltip"></div>
+
+    <article id="bus" class="card hidden">
+      <button class="close" aria-label="Close">×</button>
+      <div class="bus-head">
+        <span class="badge" id="b-route"></span>
+        <div>
+          <div class="bus-title" id="b-headsign"></div>
+          <div class="muted" id="b-name"></div>
+        </div>
+      </div>
+      <div class="bus-rows">
+        <div><span>Crowding</span><b id="b-occ"></b></div>
+        <div><span>Running</span><b id="b-delay"></b></div>
+        <div><span>Last report</span><b id="b-age"></b></div>
+      </div>
+      <button id="b-follow" class="ghost">Follow this bus</button>
+    </article>
+
+    <article id="score" class="card hidden">
+      <button class="close" aria-label="Close">×</button>
+      <h2>The honest scoreboard</h2>
+      <p>
+        BC Transit publishes a predicted arrival for every bus at every stop. bide records those predictions,
+        then records when each bus actually arrived, and scores them on the same trips, stops and lead times as
+        bide's own model.
+      </p>
+      <p id="score-progress"></p>
+      <p class="muted">
+        The first honest comparison needs about two weeks of history. Until then this card shows what has been
+        recorded so far, so nobody has to take the headline on trust.
+      </p>
+      <p class="muted small">
+        Victoria sits on the traditional territories of the Lekwungen-speaking peoples, the Songhees and Esquimalt
+        Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
+        Transit open data. Weather: Open-Meteo. Tides: Fisheries and Oceans Canada.
+      </p>
+    </article>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
