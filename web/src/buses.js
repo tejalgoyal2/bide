@@ -210,7 +210,7 @@ export function createBuses(scene, transit, world) {
 
   function update(dt, mpp) {
     const now = Date.now() / 1000;
-    const size = Math.max(1, (32 * mpp) / 12);
+    const size = Math.max(1, ((mpp > 10 ? 24 : 32) * mpp) / 12);
     glow.value = shared.uNight.value * 0.55;
     haze.copy(shared.uHaze.value);
     list.length = 0;

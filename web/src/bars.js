@@ -90,16 +90,18 @@ export function createBars(scene, activity, world) {
     for (let i = 0; i < n; i++) target[i] = valueAt(i, day, hour);
   }
 
-  function update(dt) {
+  // Up close the columns sink and thin out so the streets and buses show.
+  function update(dt, dist) {
     show += (showTarget - show) * (1 - Math.exp(-dt * 3));
-    mat.uniforms.uShow.value = show;
+    const zoom = THREE.MathUtils.lerp(0.12, 1, THREE.MathUtils.smoothstep(dist, 1500, 9000));
+    mat.uniforms.uShow.value = show * THREE.MathUtils.lerp(0.55, 1, zoom);
     mesh.visible = show > 0.01;
     const k = 1 - Math.exp(-dt * 2.5), rise = shared.uRise.value;
     for (let i = 0; i < n; i++) {
       cur[i] += (target[i] - cur[i]) * k;
       const v = cur[i];
-      const h = 62 * Math.sqrt(Math.max(0, v - 3)) * show * rise;
-      const w = THREE.MathUtils.smoothstep(h, 0, 40);
+      const h = 62 * Math.sqrt(Math.max(0, v - 3)) * show * rise * zoom;
+      const w = THREE.MathUtils.smoothstep(h, 0, 40 * zoom);
       p.set(xy[i][0], base[i] * rise, -xy[i][1]);
       s.set(w, Math.max(h, 0.001), w);
       m4.compose(p, q, s);

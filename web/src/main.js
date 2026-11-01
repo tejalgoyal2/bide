@@ -275,7 +275,7 @@ function frame() {
   sky.dome.position.copy(camera.position);
 
   buses.update(dt, mpp);
-  bars.update(dt);
+  bars.update(dt, s.dist);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);
 

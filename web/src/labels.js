@@ -69,7 +69,7 @@ export function createLabels(container, getHeight) {
       it.p.y = it.style === 'sea' ? 4 : getHeight(it.x, it.y) * rise + 30;
       v.copy(it.p).project(camera);
       const r = Math.hypot((it.x - CORE_C.x) / CORE_R.x, (-it.y - CORE_C.y) / CORE_R.y);
-      const edge = it.style === 'far' ? 1 : 1 - THREE.MathUtils.smoothstep(r, 1.1, 2.0);
+      const edge = it.style === 'far' ? 1 : it.style === 'sea' ? 1 - THREE.MathUtils.smoothstep(r, 1.8, 2.6) : 1 - THREE.MathUtils.smoothstep(r, 1.1, 2.0);
       const near = dist < TIER_DIST[it.tier] ? 1 : 0;
       const tooClose = it.tier === 1 && it.style === 'city' && dist < 2200 ? 0.35 : 1;
       let o = v.z < 1 && Math.abs(v.x) < 1.2 && Math.abs(v.y) < 1.2 ? near * edge * tooClose * rise : 0;
