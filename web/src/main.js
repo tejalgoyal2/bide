@@ -7,6 +7,8 @@ import { createNetwork } from './network.js';
 import { createLabels } from './labels.js';
 import { createWeather } from './weather.js';
 import { createOutages } from './outages.js';
+import { createAmbient } from './ambient.js';
+import { createRoadworks } from './roadworks.js';
 
 const $ = (id) => document.getElementById(id);
 document.body.classList.add('loading');
@@ -32,6 +34,8 @@ const buses = createBuses(scene, transit, world, $('tags'));
 const network = createNetwork(scene, transit);
 const labels = createLabels($('labels'), world.heightAt);
 const weather = createWeather(scene, showConditions);
+const ambient = createAmbient(scene, world);
+const roadworks = createRoadworks(scene, world.surfaceY, (ev) => ($('n-road').textContent = ev.length ? ` · ${ev.length}` : ''));
 const outages = createOutages(scene, world.surfaceY, (list) => {
   const homes = list.reduce((s, o) => s + o.out, 0);
   $('n-out').textContent = list.length ? ` · ${homes.toLocaleString()} out` : ' · none now';
@@ -66,6 +70,7 @@ function setHour(h, { live = false } = {}) {
   time.hour = ((h % 24) + 24) % 24;
   time.live = live;
   $('live').classList.toggle('on', live);
+  document.body.classList.toggle('scrubbing', !live);
   $('dial-head').style.left = `${(time.hour / 24) * 100}%`;
   $('dial-time').textContent = fmtHour(time.hour);
   $('day-type').textContent = { weekday: 'Weekday schedule', saturday: 'Saturday schedule', sunday: 'Sunday schedule' }[time.day];
@@ -119,9 +124,16 @@ $('mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mod
 setMode('lateness');
 $('t-network').onchange = (e) => network.setVisible(e.target.checked);
 $('t-weather').onchange = (e) => weather.setEnabled(e.target.checked);
+$('t-life').onchange = (e) => ambient.setEnabled(e.target.checked);
+$('t-road').onchange = (e) => roadworks.setEnabled(e.target.checked);
 $('t-out').onchange = (e) => outages.setEnabled(e.target.checked);
+$('layers-toggle').onclick = () => {
+  const open = $('layers').classList.toggle('open');
+  $('layers-toggle').setAttribute('aria-expanded', open);
+};
 $('t-labels').onchange = (e) => ($('labels').style.display = e.target.checked ? '' : 'none');
-const HOME = { x: -900, z: -2600, dist: 8200, polar: 0.92, azimuth: 0.32 };
+// Home: looking north over the Inner Harbour, downtown and on up the peninsula.
+const HOME = { x: -900, z: 2500, dist: 7000, polar: 0.95, azimuth: 0.32 };
 $('home').onclick = () => {
   controls.state.follow = null;
   controls.flyTo(HOME, 2200);
@@ -216,7 +228,9 @@ async function loadScores() {
       <p class="muted small">${d.events.toLocaleString()} prediction checks on ${d.trips} trips and ${d.arrivals.toLocaleString()} observed arrivals.
         ${days.length} day${days.length > 1 ? 's' : ''} scored so far; a new day is added every morning.</p>`;
     $('score-method').textContent = d.method;
-    $('s-recorded').textContent = `${days.length} day${days.length > 1 ? 's' : ''} scored · BC Transit off by ${mmss(o.official.mae)} on average`;
+    $('s-recorded').textContent = best
+      ? `${dayName(d.date)}: ${label[best]} ${mmss(o[best].mae)} vs BC Transit ${mmss(o.official.mae)}`
+      : `${dayName(d.date)}: BC Transit off by ${mmss(o.official.mae)} on average`;
   } catch (e) {
     console.warn('scores', e);
   }
@@ -310,12 +324,15 @@ canvas.addEventListener('pointermove', (e) => {
   const tip = $('tooltip');
   if (e.buttons) { tip.style.opacity = 0; return; }
   const b = busAtScreen(e.clientX, e.clientY);
+  let g, w;
   canvas.style.cursor = b ? 'pointer' : '';
   if (b) {
     const r = buses.routes[b.route];
     tip.innerHTML = `<b>${r?.short ?? ''}</b> ${b.headsign || r?.name || ''}`;
+  } else if (roadworks.visible && (g = controls.groundAt(e.clientX, e.clientY)) && (w = roadworks.near(g.x, -g.z, Math.max(60, controls.state.dist / 60)))) {
+    tip.innerHTML = `<b class="tip-kind">${esc(w.kind)}</b><br><span class="tip-text">${esc(w.text)}</span>`;
   } else if (network.visible) {
-    const g = controls.groundAt(e.clientX, e.clientY);
+    g = controls.groundAt(e.clientX, e.clientY);
     const v = g && network.near(g.x, -g.z, Math.max(25, controls.state.dist / 400));
     if (!v || v < 0.5) { tip.style.opacity = 0; return; }
     tip.innerHTML = `<b>${Math.round(v)}</b> buses an hour scheduled here around ${fmtHour(time.hour)}`;
@@ -378,6 +395,8 @@ function frame() {
   buses.update(dt, mpp, camera, s.dist);
   network.update(dt);
   outages.update(dt, mpp, t);
+  ambient.update(dt, mpp, t);
+  roadworks.update(dt, mpp);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);
 

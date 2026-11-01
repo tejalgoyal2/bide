@@ -1,8 +1,9 @@
 // Live buses. Each report is snapped onto its route's shape, and between
 // reports the bus keeps rolling at its recent speed, so it glides rather than
-// jumping every fifteen seconds. A bus is drawn as a pointed marker with a
-// short trail along the road it just travelled, so its direction reads at a
-// glance.
+// jumping every fifteen seconds. A bus is drawn as a flat token that always
+// faces the screen (a disc with a cream ring and a heading caret), so it stays
+// crisp at any tilt and never sinks into a hillside, plus a short trail along
+// the road it just travelled.
 import * as THREE from 'three';
 import { decodeVehicles } from '../../shared/gtfsrt.js';
 import { toXY } from '../../shared/geo.js';
@@ -77,18 +78,58 @@ function pointAt(shape, s, out) {
   return out;
 }
 
-// A disc with a pointer on its rim in the direction of travel: one unit
-// across, pointer toward +x.
-function markerGeometry() {
-  const s = new THREE.Shape();
-  const r = 0.5, a0 = 0.62;
-  s.moveTo(0.78, 0);
-  s.lineTo(r * Math.cos(a0), r * Math.sin(a0));
-  s.absarc(0, 0, r, a0, Math.PI * 2 - a0, false);
-  s.lineTo(0.78, 0);
-  return new THREE.ExtrudeGeometry(s, { depth: 0.08, bevelEnabled: true, bevelThickness: 0.025, bevelSize: 0.02, bevelSegments: 2, curveSegments: 24 })
-    .rotateX(-Math.PI / 2);
-}
+// Tokens are drawn in screen space: each instance is a quad centred on the
+// bus, sized in pixels. The fragment shader draws, in units of the disc's
+// radius: a soft shadow, the cream ring, the coloured disc, a caret pointing
+// along the road, and a ripple while the bus is stopped at a stop.
+const TOKEN_VERT = /* glsl */ `
+  attribute vec3 iPos;
+  attribute vec4 iCol;   // rgb, alpha
+  attribute vec3 iShape; // screen angle, radius in px, ripple phase (<0: none)
+  uniform vec2 uView;
+  varying vec2 vP;
+  varying vec4 vCol;
+  varying vec3 vShape;
+  const float QUAD = 2.6;
+  void main() {
+    vec4 c = projectionMatrix * viewMatrix * vec4(iPos, 1.0);
+    vP = position.xy * 2.0 * QUAD;
+    c.xy += vP * iShape.y * 2.0 / uView * c.w;
+    gl_Position = c;
+    vCol = iCol;
+    vShape = iShape;
+  }`;
+const TOKEN_FRAG = /* glsl */ `
+  uniform float uNight;
+  varying vec2 vP;
+  varying vec4 vCol;
+  varying vec3 vShape;
+  float fill(float d) { float w = fwidth(d) * 0.75; return 1.0 - smoothstep(-w, w, d); }
+  void main() {
+    float ca = cos(vShape.x), sa = sin(vShape.x);
+    vec2 p = vec2(ca * vP.x + sa * vP.y, -sa * vP.x + ca * vP.y);
+    float r = length(vP);
+    // Caret: a short chevron just beyond the ring, along +x.
+    vec2 q = vec2(p.x - 1.42, abs(p.y));
+    float caret = max(abs(q.x + q.y * 0.9) - 0.17, max(q.y - 0.55, -q.x - 0.62));
+    float body = r - 0.74, ring = r - 1.0;
+    vec3 cream = mix(vec3(0.99, 0.97, 0.92), vec3(0.86, 0.84, 0.9), uNight);
+    float shadow = (1.0 - smoothstep(0.7, 1.45, length(vP - vec2(0.12, -0.2)))) * 0.35;
+    vec4 col = vec4(0.1, 0.07, 0.05, shadow);
+    // Ripple while stopped: a ring that swells and fades.
+    if (vShape.z >= 0.0) {
+      float t = fract(vShape.z);
+      float rr = 1.0 + t * 1.5;
+      float a = (1.0 - smoothstep(0.0, 0.12, abs(r - rr))) * (1.0 - t) * 0.7;
+      col = mix(col, vec4(vCol.rgb, 1.0), a);
+    }
+    float caretOut = fill(caret - 0.12), caretIn = fill(caret);
+    col = mix(col, vec4(cream, 1.0), max(fill(ring), caretOut));
+    col = mix(col, vec4(vCol.rgb, 1.0), max(fill(body), caretIn));
+    gl_FragColor = vec4(col.rgb, col.a * vCol.a);
+    if (gl_FragColor.a < 0.004) discard;
+    #include <colorspace_fragment>
+  }`;
 
 export function createBuses(scene, transit, world, tagLayer) {
   const routes = transit.routes.map(([id, short, name], i) => ({ id, short, name, color: routeColor(i), text: '#fff' }));
@@ -106,44 +147,31 @@ export function createBuses(scene, transit, world, tagLayer) {
   let feedTs = 0;
   let mode = 'lateness';
 
-  // Flat colour, like ink on the map: no lighting, no glow.
-  const flatMat = (color) => new THREE.MeshBasicMaterial({ color });
-  const geo = markerGeometry();
-  const body = new THREE.InstancedMesh(geo, flatMat(0xffffff), MAX);
-  body.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3);
-  const rim = new THREE.InstancedMesh(geo, flatMat(0xfbf6ea), MAX);
-  for (const m of [body, rim]) {
-    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    m.frustumCulled = false;
-    m.count = 0;
-  }
-  rim.renderOrder = 20;
-  body.renderOrder = 21;
-
-  // A soft contact shadow under each marker.
-  const shadowMat = new THREE.ShaderMaterial({
-    uniforms: { uNight: shared.uNight },
-    vertexShader: /* glsl */ `
-      varying vec2 vUv;
-      void main() {
-        vUv = uv;
-        gl_Position = projectionMatrix * viewMatrix * modelMatrix * instanceMatrix * vec4(position, 1.0);
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uNight;
-      varying vec2 vUv;
-      void main() {
-        vec2 d = (vUv - 0.5) * vec2(2.0, 2.0);
-        float a = 1.0 - smoothstep(0.2, 1.0, length(d));
-        gl_FragColor = vec4(0.12, 0.09, 0.07, a * mix(0.28, 0.4, uNight));
-      }`,
-    transparent: true,
-    depthWrite: false,
-  });
-  const shadow = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), shadowMat, MAX);
-  shadow.frustumCulled = false;
-  shadow.count = 0;
-  shadow.renderOrder = 18;
+  const quad = new THREE.PlaneGeometry(1, 1);
+  const tokGeo = new THREE.InstancedBufferGeometry();
+  tokGeo.index = quad.index;
+  tokGeo.setAttribute('position', quad.getAttribute('position'));
+  const iPos = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const iCol = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+  const iShape = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  tokGeo.setAttribute('iPos', iPos);
+  tokGeo.setAttribute('iCol', iCol);
+  tokGeo.setAttribute('iShape', iShape);
+  tokGeo.instanceCount = 0;
+  const uView = { value: new THREE.Vector2(innerWidth, innerHeight) };
+  const tokens = new THREE.Mesh(
+    tokGeo,
+    new THREE.ShaderMaterial({
+      uniforms: { uView, uNight: shared.uNight },
+      vertexShader: TOKEN_VERT,
+      fragmentShader: TOKEN_FRAG,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  tokens.frustumCulled = false;
+  tokens.renderOrder = 30;
 
   // Trails: one tapered ribbon per bus, rebuilt every frame.
   const tPos = new Float32Array(MAX * TRAIL_PTS * 2 * 3);
@@ -165,7 +193,7 @@ export function createBuses(scene, transit, world, tagLayer) {
   );
   trail.frustumCulled = false;
   trail.renderOrder = 17;
-  scene.add(shadow, trail, rim, body);
+  scene.add(trail, tokens);
 
   // Route-number tags, shown when close enough to read them.
   const tags = [];
@@ -244,10 +272,8 @@ export function createBuses(scene, transit, world, tagLayer) {
   setInterval(poll, 10000);
   setInterval(pollDelays, 30000);
 
-  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3();
-  const up = new THREE.Vector3(0, 1, 0);
-  const col = new THREE.Color(), haze = new THREE.Color(), cream = new THREE.Color('#fbf6ea'), tmp = {}, tp = {};
-  const v3 = new THREE.Vector3();
+  const col = new THREE.Color(), haze = new THREE.Color(), tmp = {}, tp = {};
+  const v3 = new THREE.Vector3(), v4 = new THREE.Vector3();
   const list = [];
 
   function colorFor(b, out) {
@@ -258,14 +284,17 @@ export function createBuses(scene, transit, world, tagLayer) {
 
   function update(dt, mpp, camera, dist) {
     const now = Date.now() / 1000;
-    const len = Math.max(18, (mpp > 12 ? 15 : 21) * mpp);
-    const night = shared.uNight.value;
+    // Token radius in pixels: small dots over the whole city, room for the
+    // route number once close in.
+    const radius = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 3000, 6, 12), 5.5, 12.5);
+    const len = radius * 2.2 * mpp; // trail scale, in metres
     haze.copy(shared.uHaze.value);
-    rim.material.color.copy(cream).multiplyScalar(1 - night * 0.35);
     list.length = 0;
     let i = 0, tagN = 0;
-    const showTags = dist < 6000;
+    const showTags = radius > 10.5;
     const W = innerWidth, H = innerHeight;
+    uView.value.set(W, H);
+    const tNow = performance.now() / 1000;
     for (const [id, b] of buses) {
       b.alpha += ((b.dying ? 0 : 1) - b.alpha) * (1 - Math.exp(-dt * 2));
       if (b.dying && b.alpha < 0.02) { buses.delete(id); continue; }
@@ -296,27 +325,19 @@ export function createBuses(scene, transit, world, tagLayer) {
       if (vis < 0.03 || i >= MAX) continue;
       const gy = world.surfaceY(b.x, b.y);
       const sz = len * (0.5 + 0.5 * vis);
-      q.setFromAxisAngle(up, b.heading);
-
-      pos.set(b.x, gy + 0.08 * sz, -b.y);
-      scl.set(sz, sz, sz);
-      m4.compose(pos, q, scl);
-      body.setMatrixAt(i, m4);
       colorFor(b, col).lerp(haze, fade * 0.8);
-      body.setColorAt(i, col);
-      pos.y = gy + 0.02 * sz;
-      scl.set(sz * 1.2, sz * 0.9, sz * 1.2);
-      m4.compose(pos, q, scl);
-      rim.setMatrixAt(i, m4);
-      pos.set(b.x + sz * 0.08, gy + 0.01, -b.y + sz * 0.08);
-      scl.set(sz * 1.5, 1, sz * 1.5);
-      m4.compose(pos, q, scl);
-      shadow.setMatrixAt(i, m4);
+      // Screen-space heading: project a point a little way along the road.
+      v3.set(b.x, gy, -b.y).project(camera);
+      v4.set(b.x + Math.cos(b.heading) * 20, gy, -b.y - Math.sin(b.heading) * 20).project(camera);
+      iPos.setXYZ(i, b.x, gy + 2, -b.y);
+      iCol.setXYZW(i, col.r, col.g, col.b, vis);
+      const stopped = b.status === 1 || (b.speed === 0 && b.v < 0.5);
+      iShape.setXYZ(i, Math.atan2((v4.y - v3.y) * H, (v4.x - v3.x) * W), radius * (0.6 + 0.4 * vis), stopped ? tNow / 2.2 + (b.id.length % 7) * 0.13 : -1);
 
       // Trail: back along the shape, tapering and fading.
       const base = i * TRAIL_PTS * 2;
       const tl = Math.min(900, Math.max(60, sz * 5)) * Math.min(1, 0.3 + b.v / 6);
-      const halfW = sz * 0.2;
+      const halfW = sz * 0.22;
       for (let k = 0; k < TRAIL_PTS; k++) {
         const f = k / (TRAIL_PTS - 1);
         let x = b.x, y = b.y, nx = 0, ny = 0;
@@ -327,7 +348,7 @@ export function createBuses(scene, transit, world, tagLayer) {
           nx = -tp.hy / l; ny = tp.hx / l;
         }
         const w = halfW * (1 - f * 0.85);
-        const z = world.surfaceY(x, y) + 0.04 * sz;
+        const z = world.surfaceY(x, y) + 1.5;
         const a = onShape ? (1 - f) ** 1.6 * 0.75 * vis : 0;
         for (let side = 0; side < 2; side++) {
           const sgn = side ? 1 : -1, o = (base + k * 2 + side);
@@ -338,15 +359,14 @@ export function createBuses(scene, transit, world, tagLayer) {
         }
       }
 
-      b.screen = v3.set(b.x, gy, -b.y).clone();
+      b.screen = new THREE.Vector3(b.x, gy, -b.y);
       if (showTags && tagN < 120) {
-        v3.project(camera);
         if (v3.z < 1 && Math.abs(v3.x) < 1.05 && Math.abs(v3.y) < 1.05) {
           const t = tagFor(tagN++);
           const text = routes[b.route]?.short ?? '';
           if (t.text !== text) { t.el.textContent = text; t.text = text; }
           t.el.style.transform = `translate(${((v3.x + 1) / 2) * W}px, ${((1 - v3.y) / 2) * H}px) translate(-50%, -50%)`;
-          t.el.style.opacity = vis * THREE.MathUtils.smoothstep(6000 - dist, 0, 1500);
+          t.el.style.opacity = vis * THREE.MathUtils.smoothstep(radius, 10.5, 12);
           t.shown = true;
         }
       }
@@ -356,10 +376,9 @@ export function createBuses(scene, transit, world, tagLayer) {
     for (let k = tagN; k < tags.length; k++) if (tags[k].shown) { tags[k].el.style.opacity = 0; tags[k].shown = false; }
     // Clear trails of unused slots.
     tCol.fill(0, i * TRAIL_PTS * 2 * 4);
-    body.count = rim.count = shadow.count = i;
+    tokGeo.instanceCount = i;
+    iPos.needsUpdate = iCol.needsUpdate = iShape.needsUpdate = true;
     tGeo.setDrawRange(0, i * (TRAIL_PTS - 1) * 6);
-    for (const m of [body, rim, shadow]) m.instanceMatrix.needsUpdate = true;
-    body.instanceColor.needsUpdate = true;
     tGeo.attributes.position.needsUpdate = tGeo.attributes.color.needsUpdate = true;
   }
 

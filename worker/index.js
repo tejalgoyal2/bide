@@ -185,7 +185,8 @@ export class Recorder extends DurableObject {
               role: 'system',
               content:
                 "You write one short, warm, specific sentence (max 28 words) describing Victoria, BC's buses right now, " +
-                'like a local radio traffic line. Use only the facts given; never invent numbers, places or causes. No emoji, no hashtags.',
+                'like a local radio traffic line. Use only the facts given; never invent numbers, places or causes. ' +
+                'Do not state the clock time (the page shows it). No emoji, no hashtags.',
             },
             { role: 'user', content: facts },
           ],

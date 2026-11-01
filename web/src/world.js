@@ -378,7 +378,7 @@ const ROAD = {
   minor: [7, 0.8, 0.7, '#fffdf6', '#ddcaa8', 0.2, 2.6],
   path: [2.2, 0.45, 0, '#fbf3e1', '#fbf3e1', 0.04, 2.4],
   rail: [3, 0.7, 0, '#9a8a78', '#9a8a78', 0.15, 2.5],
-  ferry: [5, 1.2, 0, '#fdfbf4', '#fdfbf4', 0.25, 1.0],
+  ferry: [3, 0.9, 0, '#fdfbf4', '#fdfbf4', 0.25, 1.0],
 };
 
 function buildRoads(map) {
@@ -473,7 +473,7 @@ function buildRoads(map) {
           }`,
         fragmentShader: /* glsl */ `
           uniform vec3 uColor;
-          uniform float uGlow, uFade, uDash, uMpp;
+          uniform float uGlow, uFade, uDash, uMpp, uOnSea;
           varying vec3 vWorld;
           varying float vAlong;
           ${HAZE_GLSL}
@@ -484,6 +484,8 @@ function buildRoads(map) {
             vec3 col = mix(day, night, uNight);
             // Small streets fade out when seen from far away.
             float a = 1.0 - uFade * smoothstep(3.0, 9.0, uMpp);
+            // Ferry routes are a whisper on the water, not a road.
+            a *= mix(1.0, 0.4, uOnSea);
             if (a < 0.02) discard;
             gl_FragColor = vec4(applyHaze(col, vWorld), a);
             #include <colorspace_fragment>

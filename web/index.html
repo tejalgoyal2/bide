@@ -42,6 +42,7 @@
     </header>
 
     <aside id="layers" class="card">
+      <button id="layers-toggle" aria-expanded="false">Layers</button>
       <div class="layer-title">Colour buses by</div>
       <div class="seg" id="mode">
         <button data-mode="lateness" class="on">Lateness</button>
@@ -49,11 +50,16 @@
         <button data-mode="route">Route</button>
       </div>
       <div id="legend"></div>
-      <label class="toggle"><input type="checkbox" id="t-network" checked /><span></span>Service frequency</label>
-      <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
-      <label class="toggle"><input type="checkbox" id="t-out" checked /><span></span>Power outages<small id="n-out" class="muted"></small></label>
-      <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
-      <button id="home" class="ghost">Back to the city</button>
+      <details id="layer-list" open>
+        <summary>Layers</summary>
+        <label class="toggle"><input type="checkbox" id="t-network" checked /><span></span>Service frequency</label>
+        <label class="toggle"><input type="checkbox" id="t-life" checked /><span></span>Harbour life</label>
+        <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
+        <label class="toggle"><input type="checkbox" id="t-road" checked /><span></span>Road works<small id="n-road" class="muted"></small></label>
+        <label class="toggle"><input type="checkbox" id="t-out" checked /><span></span>Power outages<small id="n-out" class="muted"></small></label>
+        <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
+      </details>
+      <button id="home" class="ghost">Recentre on Victoria</button>
     </aside>
 
     <section id="stats" class="card">
@@ -62,8 +68,8 @@
       <div class="stat"><b id="s-late">–</b><span>3+ min behind</span></div>
       <button id="score-open" class="score-teaser">
         <span class="dot"></span>
-        <span><b>Scoreboard</b> · our predictions vs BC Transit's</span>
-        <span id="s-recorded" class="muted"></span>
+        <b>The honest scoreboard</b>
+        <span id="s-recorded" class="muted">bide vs BC Transit's own predictions</span>
       </button>
     </section>
 
@@ -119,7 +125,7 @@
       <p class="muted small">
         Victoria sits on the traditional territories of the Lekwungen-speaking peoples, the Songhees and Esquimalt
         Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
-        Transit open data. Weather: Open-Meteo. Tides: Fisheries and Oceans Canada.
+        Transit open data. Road events: DriveBC. Power outages: BC Hydro. Weather: Open-Meteo. Tides: Fisheries and Oceans Canada.
       </p>
     </article>
 

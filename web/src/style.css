@@ -135,7 +135,15 @@ body.loading .card { opacity: 0; transform: translateY(10px); pointer-events: no
 .stat b { font-family: var(--mono); font-size: 22px; font-weight: 600; min-width: 46px; font-variant-numeric: tabular-nums; }
 .stat span { font-size: 12.5px; color: var(--muted); }
 .score-teaser { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; width: 100%; margin-top: 10px; text-align: left; background: var(--line); border: 0; border-radius: 12px; padding: 9px 11px; font-size: 12.5px; }
-.score-teaser .muted { grid-column: 2; font-size: 11.5px; }
+.score-teaser .muted { grid-column: 2; font-size: 11.5px; line-height: 1.35; }
+.score-teaser:hover { background: rgba(224, 119, 79, 0.14); }
+body.scrubbing #day-type { opacity: 1; }
+#layer-list summary { list-style: none; cursor: pointer; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 4px 2px 6px; display: flex; justify-content: space-between; user-select: none; }
+#layer-list summary::-webkit-details-marker { display: none; }
+#layer-list summary::after { content: ''; width: 6px; height: 6px; margin: 3px 4px 0 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); transition: transform 0.25s; }
+#layer-list:not([open]) summary::after { transform: rotate(-45deg); }
+#layer-list { border-top: 1px solid var(--line); padding-top: 6px; }
+.toggle small { margin-left: auto; font-size: 11px; }
 .score-teaser .dot { width: 8px; height: 8px; border-radius: 50%; background: #e0574f; box-shadow: 0 0 0 0 rgba(224, 87, 79, 0.6); animation: pulse 2s infinite; }
 @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(224, 87, 79, 0); } 100% { box-shadow: 0 0 0 0 rgba(224, 87, 79, 0); } }
 
@@ -146,7 +154,7 @@ body.loading #timebar { transform: translate(-50%, 10px); }
 #live { border: 1px solid var(--line); background: transparent; border-radius: 20px; padding: 6px 12px; font-size: 12px; font-weight: 600; flex: none; }
 #live.on { background: #e0574f; color: white; border-color: transparent; }
 #live.on::before { content: '● '; font-size: 9px; vertical-align: 1px; }
-#day-type { position: absolute; top: -20px; left: 62px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+#day-type { opacity: 0; transition: opacity 0.4s; position: absolute; top: -20px; left: 62px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 #dial { position: relative; flex: 1; height: 34px; cursor: ew-resize; touch-action: none; }
 #dial-track { position: absolute; left: 0; right: 0; top: 15px; height: 4px; border-radius: 2px; background: linear-gradient(90deg, #2a3160 0%, #2a3160 22%, #f2a97f 28%, #f6dca8 36%, #f6dca8 70%, #f2a97f 76%, #2a3160 82%, #2a3160 100%); opacity: 0.7; }
 #dial-fill { display: none; }
@@ -156,6 +164,8 @@ body.loading #timebar { transform: translate(-50%, 10px); }
 
 #tooltip { position: fixed; pointer-events: none; padding: 7px 10px; border-radius: 10px; background: var(--paper-solid); color: var(--ink); font-size: 12px; box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.4); opacity: 0; transition: opacity 0.2s; transform: translate(14px, 14px); white-space: nowrap; }
 #tooltip b { font-family: var(--mono); font-size: 14px; }
+#tooltip .tip-kind { font-family: var(--sans); font-size: 12px; text-transform: capitalize; }
+#tooltip .tip-text { display: inline-block; white-space: normal; width: 260px; color: var(--muted); line-height: 1.4; }
 
 #bus { right: 16px; bottom: 16px; width: 290px; padding: 16px; }
 .close { position: absolute; top: 8px; right: 10px; border: 0; background: none; font-size: 20px; color: var(--muted); }
@@ -195,15 +205,23 @@ body.night .alerts-chip { color: #f1c27d; }
 #score p { font-size: 14px; line-height: 1.55; margin: 10px 0; }
 #score-progress { font-size: 15px !important; font-weight: 600; }
 
+#layers-toggle { display: none; }
+
 @media (max-width: 900px) {
-  #layers { top: auto; bottom: 86px; right: 12px; width: 220px; padding: 12px; }
-  #brand { top: 12px; left: 12px; }
-  #stats { display: none; }
+  #brand { top: 12px; left: 12px; right: 12px; min-width: 0; padding: 12px 14px 10px; }
+  .now { max-width: none; font-size: 12.5px; }
   #timebar { left: 12px; right: 12px; bottom: 12px; transform: none; width: auto; min-width: 0; }
   body.loading #timebar { transform: translateY(10px); }
-  #bus { left: 12px; right: 12px; width: auto; bottom: 86px; }
-}
-@media (max-width: 560px) {
-  #layers .toggle, #layers .ghost { display: none; }
-  #layers { width: auto; left: 12px; }
+  /* A compact row above the time bar: the scoreboard chip and a Layers pill. */
+  #stats { left: 12px; right: 110px; bottom: 80px; width: auto; padding: 5px; border-radius: 15px; }
+  #stats .stat { display: none; }
+  #stats .score-teaser { margin-top: 0; padding: 7px 10px; }
+  #layers { top: auto; bottom: 80px; right: 12px; width: 88px; padding: 5px; border-radius: 15px; }
+  #layers:not(.open) > :not(#layers-toggle) { display: none; }
+  #layers-toggle { display: block; width: 100%; border: 0; background: var(--line); border-radius: 11px; padding: 13px 6px; font-size: 12.5px; font-weight: 600; }
+  #layers.open { left: 12px; width: auto; bottom: 80px; padding: 12px; z-index: 4; background: var(--paper-solid); }
+  #layers.open #layers-toggle { margin-bottom: 10px; padding: 9px; }
+  #layers.open #layers-toggle::after { content: ' · done'; color: var(--muted); font-weight: 500; }
+  #bus { left: 12px; right: 12px; width: auto; bottom: 80px; z-index: 5; }
+  #day-type { display: none; }
 }
