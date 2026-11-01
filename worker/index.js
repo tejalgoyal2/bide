@@ -1,11 +1,12 @@
 import { DurableObject } from 'cloudflare:workers';
 import { feedTimestamp, decodeTripUpdates, decodeVehicles, decodeAlerts } from '../shared/gtfsrt.js';
+import { BOUNDS } from '../shared/geo.js';
 
 const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
 const OP = '?operatorIds=48';
 
-const CODE_VERSION = 4;
+const CODE_VERSION = 6;
 const TICK = 10_000; // vehicle feed refreshes about every 15 s
 const TRIP_EVERY = 60_000;
 const ALERT_EVERY = 300_000;
@@ -175,7 +176,9 @@ export class Recorder extends DurableObject {
         headers: { authorization: `Bearer ${this.env.GROQ_API_KEY}`, 'content-type': 'application/json' },
         body: JSON.stringify({
           model,
-          max_tokens: 90,
+          // Reasoning models think before they write; leave them room.
+          max_tokens: model.includes('gpt-oss') ? 600 : 120,
+          ...(model.includes('gpt-oss') && { reasoning_effort: 'low', include_reasoning: false }),
           temperature: 0.6,
           messages: [
             {
@@ -190,14 +193,19 @@ export class Recorder extends DurableObject {
         signal: AbortSignal.timeout(15000),
       });
     try {
-      let res = await ask(this.env.GROQ_MODEL || 'llama-3.3-70b-versatile');
-      if (res.status === 404 || res.status === 400) res = await ask('openai/gpt-oss-20b');
-      if (!res.ok) throw new Error(`groq ${res.status}`);
-      const text = (await res.json()).choices?.[0]?.message?.content?.trim().replace(/^"|"$/g, '');
-      if (text) {
+      // Models come and go on Groq's free tier; walk down the list.
+      const models = [this.env.GROQ_MODEL || 'llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'llama-3.1-8b-instant'];
+      const why = [];
+      for (const model of models) {
+        const res = await ask(model);
+        if (!res.ok) { why.push(`${model} ${res.status}`); if (res.status === 429 || res.status === 401) break; continue; }
+        const text = (await res.json()).choices?.[0]?.message?.content?.trim().replace(/^"|"$/g, '');
+        if (!text) { why.push(`${model} empty`); continue; }
         this.now = { text, at: Date.now() };
         await this.ctx.storage.put('now', this.now);
+        break;
       }
+      if (!this.now || Date.now() - this.now.at > 60_000) throw new Error(`groq: ${why.join(', ')}`);
     } catch (e) {
       this.fail(String(e.message || e));
     }
@@ -214,6 +222,7 @@ export class Recorder extends DurableObject {
       alerts: count('al'),
       schedules: this.sql.exec('SELECT seen, name FROM gtfs ORDER BY seen').toArray(),
       bytes: this.sql.databaseSize,
+      groq: !!this.env.GROQ_API_KEY,
       recentErrors: this.sql.exec('SELECT at, what FROM err ORDER BY at DESC LIMIT 5').toArray(),
     };
   }
@@ -277,6 +286,36 @@ export default {
 
     if (url.pathname === '/api/now') {
       return json(await rec.nowLine(url.searchParams.get('weather')?.slice(0, 80)), 120);
+    }
+
+    // Power outages inside the map, from BC Hydro's public outage map; one
+    // upstream call per 2 minutes, shared via the edge cache.
+    if (url.pathname === '/api/outages') {
+      const cache = caches.default;
+      const key = new Request('https://bide.cache/outages');
+      const hit = await cache.match(key);
+      if (hit) return hit;
+      let list = [], ok = true;
+      try {
+        const res = await fetch('https://www.bchydro.com/power-outages/app/outages-map-data.json', {
+          headers: { 'user-agent': 'bide (https://bide.itejalgoyal.workers.dev)', accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(res.status);
+        list = (await res.json())
+          .filter((o) => o.latitude > BOUNDS.south && o.latitude < BOUNDS.north && o.longitude > BOUNDS.west && o.longitude < BOUNDS.east)
+          .map((o) => ({
+            id: o.id, area: o.area, place: o.municipality, cause: o.cause, out: o.numCustomersOut,
+            since: o.dateOff, back: o.showEtr ? o.crewEtr : null, crew: o.crewStatusDescription,
+            lat: o.latitude, lon: o.longitude, poly: (o.polygon || []).map((v) => +v.toFixed(5)),
+          }));
+      } catch {
+        ok = false;
+      }
+      const out = json(list, ok ? 120 : 30);
+      out.headers.set('x-upstream', ok ? 'ok' : 'failed');
+      await cache.put(key, out.clone());
+      return out;
     }
 
     if (url.pathname === '/api/scores') {

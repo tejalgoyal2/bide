@@ -51,6 +51,7 @@
       <div id="legend"></div>
       <label class="toggle"><input type="checkbox" id="t-network" checked /><span></span>Service frequency</label>
       <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
+      <label class="toggle"><input type="checkbox" id="t-out" checked /><span></span>Power outages<small id="n-out" class="muted"></small></label>
       <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
       <button id="home" class="ghost">Back to the city</button>
     </aside>
@@ -110,8 +111,8 @@
         <p id="score-method"></p>
         <p>
           <b>bide</b> is independent: it uses the timetable and the bus's own reported progress.
-          <b>bide+</b> starts from BC Transit's prediction and corrects the drift it tends to have, learned on an
-          earlier day. Settings are always learned on a previous day, never the day being scored.
+          <b>bide+</b> blends BC Transit's prediction, bide's and the timetable, with weights for each lead time
+          learned on an earlier day. Both notice when the feed's clock is a whole hour out and correct it. Settings are always learned on a previous day, never the day being scored.
         </p>
       </details>
       <p id="score-progress" class="muted small"></p>

@@ -155,9 +155,30 @@ console.log(`observed arrivals: ${nArr} at stops, over ${arrivals.size} trips`);
 
 // --- 3. events ----------------------------------------------------------------
 // Flat arrays keep a full day's millions of events cheap.
-let blank = 0;
-const ev = { A: [], made: [], official: [], sched: [], h: [], hour: [], route: [], prevA: [], prevSched: [], nextSched: [], has: [] };
+// The feed's clock. On 2026-11-01, when clocks fell back, BC Transit's feed
+// shifted every timetable and prediction an hour into the future. Buses that
+// were just seen at a stop reveal it: their apparent delay is about -1 h.
+// Per snapshot, the median apparent delay of recently seen buses, rounded to
+// whole hours, is the offset; bide removes it. Only past reports are used.
+function clockOffset(snap) {
+  const d = [];
+  for (const { tripId } of snap.trips) {
+    const arr = arrivals.get(tripId), sm = sched.get(tripId);
+    if (!arr) continue;
+    let pj = -1, pA = 0;
+    for (const [seq, a] of arr) if (a.known <= snap.ts && seq > pj && sm.has(seq)) { pj = seq; pA = a.A; }
+    if (pj >= 0 && snap.ts - pA < 600) d.push(pA - sm.get(pj));
+  }
+  if (d.length < 10) return 0;
+  d.sort((a, b) => a - b);
+  return Math.round(d[d.length >> 1] / 3600) * 3600;
+}
+
+let blank = 0, offsetSnaps = 0;
+const ev = { A: [], made: [], official: [], sched: [], off: [], h: [], hour: [], route: [], prevA: [], prevSched: [], nextSched: [], has: [] };
 for (const snap of snapshots) {
+  const off = clockOffset(snap);
+  if (off) offsetSnaps++;
   for (const { tripId, stops } of snap.trips) {
     const arr = arrivals.get(tripId);
     if (!arr) continue;
@@ -180,13 +201,14 @@ for (const snap of snapshots) {
       // A prediction with no usable time (BC Transit sometimes sends none)
       // drops the event for every predictor, and is counted.
       if (!stops[i + 1] || Math.abs(stops[i + 1] - a.A) > 3 * 3600) { blank++; continue; }
-      ev.A.push(a.A); ev.made.push(snap.ts); ev.official.push(stops[i + 1]); ev.sched.push(stops[i + 1] - stops[i + 2]);
+      ev.A.push(a.A); ev.made.push(snap.ts); ev.official.push(stops[i + 1]); ev.sched.push(stops[i + 1] - stops[i + 2]); ev.off.push(off);
       ev.h.push(h); ev.hour.push(localHour(a.A)); ev.route.push(tripRoute.get(tripId) || '?');
       ev.has.push(pj >= 0 ? 1 : 0); ev.prevA.push(pA); ev.prevSched.push(pS); ev.nextSched.push(nS);
     }
   }
 }
 const N = ev.A.length;
+if (offsetSnaps) console.log(`feed clock off by whole hours in ${offsetSnaps} of ${snapshots.length} prediction snapshots`);
 console.log(`events (prediction, then arrival, same set for every predictor): ${N}; dropped for a blank prediction: ${blank}`);
 
 // bide v1: delay persistence with drift. The bus's current delay is the
@@ -196,21 +218,64 @@ console.log(`events (prediction, then arrival, same set for every predictor): ${
 // timepoints), plus a drift of beta seconds per scheduled minute ahead, as
 // buses tend to lose time along a trip. Never sooner than physically possible.
 function bide(i, p) {
-  const s = ev.sched[i], made = ev.made[i];
-  const live = ev.nextSched[i] ? made - ev.nextSched[i] : -Infinity;
+  const o = ev.off[i], s = ev.sched[i] + o, made = ev.made[i], ps = ev.prevSched[i] + o;
+  const live = ev.nextSched[i] ? made - ev.nextSched[i] - o : -Infinity;
   if (!ev.has[i]) return Math.max(s + Math.max(0, live), made + 15);
-  const d = Math.max(ev.prevA[i] - ev.prevSched[i], live);
-  const ahead = Math.max(0, s - ev.prevSched[i]);
+  const d = Math.max(ev.prevA[i] - ps, live);
+  const ahead = Math.max(0, s - ps);
   const k = (d >= 0 ? p.rho : p.gamma) ** (ahead / 600);
   return Math.max(s + d * k + (p.beta * ahead) / 60, ev.prevA[i] + 0.75 * ahead, made + 15);
 }
 
-// bide+: BC Transit's own prediction, corrected for its drift. Their lead
-// time is known when the prediction is made; c is the seconds buses tend to
-// lose per minute of it, learned on an earlier day.
+// bide+: a blend of BC Transit's prediction, bide's own and the timetable.
+// Each is turned into "seconds from now"; per band of BC Transit's lead time
+// (known when the prediction is made), arrival = w0 + w1*official + w2*bide +
+// w3*schedule, with weights learned on an earlier day (least absolute error).
+// bide carries the bus's live delay, which BC Transit's figure underweights.
+// Days fitted before the blend existed carry only c, a drift per lead minute.
+const LEAD_BANDS = [120, 300, 600, 900, 1200, Infinity];
+const band = (lead) => LEAD_BANDS.findIndex((b) => lead <= b);
+function features(i, p) {
+  const made = ev.made[i];
+  return [1, Math.max(0, ev.official[i] + ev.off[i] - made), Math.max(0, bide(i, p) - made), ev.sched[i] + ev.off[i] - made];
+}
 function bidePlus(i, p) {
-  const lead = Math.max(0, ev.official[i] - ev.made[i]);
-  return Math.max(ev.official[i] + (p.c * lead) / 60, ev.made[i] + 15);
+  const lead = Math.max(0, ev.official[i] + ev.off[i] - ev.made[i]);
+  const w = p.w?.[band(lead)];
+  if (!w) return Math.max(ev.official[i] + ev.off[i] + ((p.c || 0) * lead) / 60, ev.made[i] + 15);
+  const x = features(i, p);
+  return Math.max(ev.made[i] + w[0] * x[0] + w[1] * x[1] + w[2] * x[2] + w[3] * x[3], ev.made[i] + 15);
+}
+
+// Least absolute error by iteratively reweighted least squares.
+function fitL1(X, y) {
+  const k = X[0].length;
+  let w = null;
+  for (let it = 0; it < 12; it++) {
+    const A = Array.from({ length: k }, () => new Float64Array(k + 1));
+    for (let n = 0; n < X.length; n++) {
+      const x = X[n];
+      const r = w ? Math.abs(y[n] - x.reduce((s, v, j) => s + v * w[j], 0)) : 1;
+      const q = 1 / Math.max(r, 10);
+      for (let a = 0; a < k; a++) {
+        for (let b = 0; b < k; b++) A[a][b] += q * x[a] * x[b];
+        A[a][k] += q * x[a] * y[n];
+      }
+    }
+    for (let a = 0; a < k; a++) A[a][a] += 1e-3; // a whisker of ridge for stability
+    for (let c = 0; c < k; c++) {
+      let piv = c;
+      for (let r = c + 1; r < k; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      [A[c], A[piv]] = [A[piv], A[c]];
+      for (let r = 0; r < k; r++) {
+        if (r === c) continue;
+        const f = A[r][c] / A[c][c];
+        for (let j = c; j <= k; j++) A[r][j] -= f * A[c][j];
+      }
+    }
+    w = Array.from({ length: k }, (_, a) => A[a][k] / A[a][a]);
+  }
+  return w;
 }
 
 // --- 4. scoring ---------------------------------------------------------------
@@ -271,12 +336,24 @@ for (let rho = 0.7; rho <= 1.0001; rho += 0.05) {
     }
   }
 }
-let bestC = Infinity;
-for (let c = 0; c <= 16; c += 0.5) {
-  let ae = 0;
-  for (let i = 0; i < N; i += stride) ae += Math.abs(bidePlus(i, { c }) - ev.A[i]);
-  if (ae < bestC) { bestC = ae; fitted.c = c; }
+// bide+ weights, per lead band, on the same sample, using the bide params
+// just fitted (that is what tomorrow's bide+ will see).
+const bands = LEAD_BANDS.map(() => ({ X: [], y: [] }));
+for (let i = 0; i < N; i += stride) {
+  const b = bands[band(Math.max(0, ev.official[i] + ev.off[i] - ev.made[i]))];
+  b.X.push(features(i, fitted)); b.y.push(ev.A[i] - ev.made[i]);
 }
+// When the feed carries no delays (as on 2026-11-01), official and timetable
+// are the same number and their weights can't be told apart: the timetable
+// is left out rather than fitted to a wild +/- pair.
+let withDelay = 0;
+for (let i = 0; i < N; i += stride) if (Math.abs(ev.official[i] - ev.sched[i]) > 30) withDelay++;
+const useSched = withDelay > 0.05 * Math.ceil(N / stride);
+fitted.w = bands.map((b) => {
+  if (b.X.length < 200) return null;
+  const w = fitL1(useSched ? b.X : b.X.map((x) => x.slice(0, 3)), b.y);
+  return [...w, ...(useSched ? [] : [0])].map((v) => +v.toFixed(4));
+});
 
 // Recording began partway through the first day; say so on the board.
 const firstSnap = vpRows[0].ts;
@@ -289,6 +366,7 @@ const summary = {
   trips: arrivals.size,
   events: N,
   droppedBlank: blank,
+  feedClockOffset: offsetSnaps ? +(offsetSnaps / snapshots.length).toFixed(3) : 0,
   params: { used: params, fitted },
   overall,
   buckets,

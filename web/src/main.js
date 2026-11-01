@@ -6,6 +6,7 @@ import { createBuses, delayColor, occupancyColor, occupancyLabel } from './buses
 import { createNetwork } from './network.js';
 import { createLabels } from './labels.js';
 import { createWeather } from './weather.js';
+import { createOutages } from './outages.js';
 
 const $ = (id) => document.getElementById(id);
 document.body.classList.add('loading');
@@ -31,6 +32,11 @@ const buses = createBuses(scene, transit, world, $('tags'));
 const network = createNetwork(scene, transit);
 const labels = createLabels($('labels'), world.heightAt);
 const weather = createWeather(scene, showConditions);
+const outages = createOutages(scene, world.surfaceY, (list) => {
+  const homes = list.reduce((s, o) => s + o.out, 0);
+  $('n-out').textContent = list.length ? ` · ${homes.toLocaleString()} out` : ' · none now';
+  $('n-out').title = list.map((o) => `${o.place}, ${o.area}: ${o.out} customers (${o.cause})`).join('\n');
+});
 
 // --- time -----------------------------------------------------------------
 // The dial drives the light and the activity columns. Buses are always live.
@@ -113,6 +119,7 @@ $('mode').onclick = (e) => e.target.dataset.mode && setMode(e.target.dataset.mod
 setMode('lateness');
 $('t-network').onchange = (e) => network.setVisible(e.target.checked);
 $('t-weather').onchange = (e) => weather.setEnabled(e.target.checked);
+$('t-out').onchange = (e) => outages.setEnabled(e.target.checked);
 $('t-labels').onchange = (e) => ($('labels').style.display = e.target.checked ? '' : 'none');
 const HOME = { x: -900, z: -2600, dist: 8200, polar: 0.92, azimuth: 0.32 };
 $('home').onclick = () => {
@@ -188,7 +195,8 @@ async function loadScores() {
       ? ` (partial: recording began ${new Date(d.partialFrom * 1000).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })})`
       : '';
     // Only call it ahead when it is clearly ahead, by at least 1%.
-    const best = o.bidePlus.mae < o.official.mae * 0.99 ? 'bidePlus' : null;
+    const best = ['bide', 'bidePlus'].filter((k) => o[k].mae < o.official.mae * 0.99).sort((a, b) => o[a].mae - o[b].mae)[0];
+    const label = { bide: 'bide', bidePlus: 'bide+' };
     const rows = d.buckets.map((b) => {
       const vals = ['official', 'bide', 'bidePlus'].map((k) => b[k]?.mae ?? null);
       const min = Math.min(...vals.filter((v) => v != null));
@@ -197,8 +205,10 @@ async function loadScores() {
     $('score-body').innerHTML = `
       <p class="headline">${dayName(d.date)}${partial}: BC Transit's predictions missed by <em>${mmss(o.official.mae)}</em> on average,
         and were within a minute ${o.official.within60}% of the time.
-        ${best ? `bide+ missed by <em>${mmss(o.bidePlus.mae)}</em>.` : `bide+ ${mmss(o.bidePlus.mae)}, bide ${mmss(o.bide.mae)}: not ahead yet.`}</p>
-      <p>Predictions run optimistic: made 20–30 minutes out, buses arrived <b>${mmss(-far.official.bias)}</b> later than predicted on average.</p>
+        ${best ? `${label[best]} missed by <em>${mmss(o[best].mae)}</em>, within a minute ${o[best].within60}% of the time.` : `bide+ ${mmss(o.bidePlus.mae)}, bide ${mmss(o.bide.mae)}: not ahead yet.`}</p>
+      ${d.feedClockOffset > 0.5
+        ? `<p>BC Transit's feed ran on the wrong clock this day: every prediction and timetable time was a whole hour off, with no delays reported. bide noticed from where the buses actually were and corrected for it.</p>`
+        : `<p>Predictions run ${far.official.bias < 0 ? 'optimistic' : 'cautious'}: made 20–30 minutes out, buses arrived <b>${mmss(Math.abs(far.official.bias))}</b> ${far.official.bias < 0 ? 'later' : 'earlier'} than predicted on average.</p>`}
       ${chart(d.buckets)}
       <table class="score-table">
         <tr><th>Made</th><th>Checks</th><th>BC Transit</th><th>bide</th><th>bide+</th></tr>${rows}
@@ -367,6 +377,7 @@ function frame() {
 
   buses.update(dt, mpp, camera, s.dist);
   network.update(dt);
+  outages.update(dt, mpp, t);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);
 
