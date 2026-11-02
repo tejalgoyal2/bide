@@ -167,7 +167,7 @@ body.loading #timebar { transform: translate(-50%, 10px); }
 #tooltip .tip-kind { font-family: var(--sans); font-size: 12px; text-transform: capitalize; }
 #tooltip .tip-text { display: inline-block; white-space: normal; width: 260px; color: var(--muted); line-height: 1.4; }
 
-#bus { right: 16px; bottom: 16px; width: 290px; padding: 16px; }
+#bus { right: 16px; bottom: 16px; width: 310px; padding: 16px; }
 .close { position: absolute; top: 8px; right: 10px; border: 0; background: none; font-size: 20px; color: var(--muted); }
 .bus-head { display: flex; gap: 12px; align-items: center; }
 .badge { min-width: 44px; height: 44px; padding: 0 8px; border-radius: 14px; display: grid; place-items: center; font-weight: 800; font-size: 20px; letter-spacing: -0.02em; }
@@ -175,6 +175,18 @@ body.loading #timebar { transform: translate(-50%, 10px); }
 .bus-rows { margin-top: 12px; display: grid; gap: 6px; font-size: 13px; }
 .bus-rows div { display: flex; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 6px; }
 .bus-rows span { color: var(--muted); }
+#b-next { margin-top: 12px; font-size: 13px; }
+#b-next .next-head, #b-stops li { display: grid; grid-template-columns: minmax(0, 1fr) auto 76px; gap: 6px; align-items: baseline; }
+#b-next .next-head { color: var(--muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; padding-bottom: 4px; white-space: nowrap; }
+#b-next .next-head span:not(:first-child), #b-stops li b, #b-stops li span:not(:first-child) { text-align: right; }
+#b-stops { list-style: none; margin: 0; padding: 0; }
+#b-stops li { border-top: 1px solid var(--line); padding: 5px 0; font-variant-numeric: tabular-nums; }
+#b-stops li span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#b-stops li span:nth-child(2) { color: var(--muted); }
+#b-stops li i { font-style: normal; font-size: 11px; margin-left: 3px; }
+#b-stops li i.later { color: #c2702a; }
+#b-stops li i.sooner { color: #3f8a5a; }
+#b-note { margin: 6px 0 0; line-height: 1.35; }
 
 #score, #alerts { left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; padding: 24px 26px; z-index: 5; }
 #score.hidden, #alerts.hidden { transform: translate(-50%, -46%) !important; }

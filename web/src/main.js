@@ -284,7 +284,53 @@ function busAtScreen(x, y, radius = 26) {
   }
   return best;
 }
+// Next stops: BC Transit's prediction beside bide's, live from /api/trip.
+const stopName = new Map(transit.stops.map((st) => [st[0], st[1]]));
+let tripData = null, tripTimer = 0;
+async function loadTrip() {
+  clearTimeout(tripTimer);
+  const b = selected;
+  if (!b?.tripId) return;
+  tripTimer = setTimeout(loadTrip, 20_000);
+  try {
+    const sent = Date.now() / 1000;
+    const d = await (await fetch('/api/trip?id=' + encodeURIComponent(b.tripId))).json();
+    if (selected !== b) return;
+    tripData = d && { ...d, trip: b.tripId, skew: d.now - sent };
+  } catch { /* keep the last answer */ }
+  renderTrip();
+}
+const fmtMin = (t, now) => {
+  const m = Math.round((t - now) / 60);
+  return m <= 0 ? 'now' : `${m} min`;
+};
+const DATE_FMT = { month: 'short', day: 'numeric', timeZone: 'UTC' };
+function renderTrip() {
+  const d = tripData;
+  $('b-next').hidden = !d?.stops?.length;
+  if (!d?.stops?.length) return;
+  const now = Date.now() / 1000 + d.skew;
+  const key = d.model.best === 'bide' ? 'bide' : 'plus';
+  $('b-model').textContent = key === 'bide' ? 'bide' : 'bide+';
+  $('b-stops').innerHTML = d.stops
+    .filter((st) => Math.max(st.official, st[key]) > now - 60)
+    .slice(0, 4)
+    .map((st) => {
+      const diff = Math.round((st[key] - st.official) / 60);
+      const tag = diff && Math.abs(diff) < 30 ? `<i class="${diff > 0 ? 'later' : 'sooner'}">${diff > 0 ? '+' : '−'}${Math.abs(diff)}</i>` : '';
+      const name = (stopName.get(st.id) || `Stop ${st.seq}`).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      return `<li><span title="${name}">${name}</span><span>${fmtMin(st.official, now)}</span><b>${fmtMin(st[key], now)}${tag}</b></li>`;
+    })
+    .join('');
+  const m = d.model, name = key === 'bide' ? 'bide' : 'bide+';
+  const day = m.from ? new Date(m.from + 'T00:00:00Z').toLocaleDateString('en-CA', DATE_FMT) : '';
+  $('b-note').textContent =
+    (d.off ? `BC Transit's feed clock is ${Math.abs(d.off / 3600)} h out right now; ${name} corrects it. ` : '') +
+    (m.from ? `${name} uses settings learned on ${day}${m.mae ? `, when it was off by ${(m.mae[m.best] / 60).toFixed(1)} min on average (BC Transit: ${(m.mae.official / 60).toFixed(1)})` : ''}.` : '');
+}
+
 function select(b) {
+  if (b !== selected) { tripData = null; $('b-next').hidden = true; }
   selected = b;
   $('bus').classList.toggle('hidden', !b);
   if (!b) { controls.state.follow = null; return; }
@@ -296,17 +342,21 @@ function select(b) {
   $('b-name').textContent = r ? r.name : '';
   $('b-follow').textContent = 'Follow this bus';
   refreshCard();
+  loadTrip();
 }
 function refreshCard() {
   if (!selected) return;
   const b = selected;
   $('b-occ').textContent = occupancyLabel(b.occ);
   $('b-occ').style.color = occupancyColor(b.occ);
-  const d = buses.delayOf(b);
+  // The delay seen at the last stop the bus reached, else BC Transit's figure.
+  const seen = tripData?.passed && selected.tripId === tripData.trip ? tripData.passed.delay : null;
+  const d = seen ?? buses.delayOf(b);
   $('b-delay').textContent =
     d == null ? 'no prediction yet' : Math.abs(d) < 60 ? 'on time' : `${Math.round(Math.abs(d) / 60)} min ${d > 0 ? 'late' : 'early'}`;
   $('b-delay').style.color = delayColor(d);
   $('b-age').textContent = b.vts ? `${Math.max(0, Math.round(Date.now() / 1000 - b.vts))} s ago` : '–';
+  renderTrip();
 }
 setInterval(refreshCard, 1000);
 controls.state.onTap = (x, y) => select(busAtScreen(x, y));

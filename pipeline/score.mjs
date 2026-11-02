@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { decodeVehicles } from '../shared/gtfsrt.js';
+import { bideAt, featuresAt, plusAt, LEAD_BANDS, band } from '../shared/model.js';
 
 const URL_BASE = process.env.BIDE_URL || 'https://bide.itejalgoyal.workers.dev';
 const KEY = process.env.BIDE_KEY;
@@ -211,40 +212,19 @@ const N = ev.A.length;
 if (offsetSnaps) console.log(`feed clock off by whole hours in ${offsetSnaps} of ${snapshots.length} prediction snapshots`);
 console.log(`events (prediction, then arrival, same set for every predictor): ${N}; dropped for a blank prediction: ${blank}`);
 
-// bide v1: delay persistence with drift. The bus's current delay is the
-// delay seen at the last stop it reached, or more if it still hasn't reached
-// the next one. That delay carries forward, fading with scheduled time ahead
-// (rho per 10 min when late, gamma when early, since early buses wait at
-// timepoints), plus a drift of beta seconds per scheduled minute ahead, as
-// buses tend to lose time along a trip. Never sooner than physically possible.
+// The models live in shared/model.js (the live bus card runs the same code);
+// these read one event from the flat arrays, with the feed's clock corrected.
 function bide(i, p) {
-  const o = ev.off[i], s = ev.sched[i] + o, made = ev.made[i], ps = ev.prevSched[i] + o;
-  const live = ev.nextSched[i] ? made - ev.nextSched[i] - o : -Infinity;
-  if (!ev.has[i]) return Math.max(s + Math.max(0, live), made + 15);
-  const d = Math.max(ev.prevA[i] - ps, live);
-  const ahead = Math.max(0, s - ps);
-  const k = (d >= 0 ? p.rho : p.gamma) ** (ahead / 600);
-  return Math.max(s + d * k + (p.beta * ahead) / 60, ev.prevA[i] + 0.75 * ahead, made + 15);
+  const o = ev.off[i];
+  return bideAt(ev.made[i], ev.sched[i] + o, ev.has[i], ev.prevA[i], ev.prevSched[i] + o, ev.nextSched[i] ? ev.nextSched[i] + o : 0, p);
 }
-
-// bide+: a blend of BC Transit's prediction, bide's own and the timetable.
-// Each is turned into "seconds from now"; per band of BC Transit's lead time
-// (known when the prediction is made), arrival = w0 + w1*official + w2*bide +
-// w3*schedule, with weights learned on an earlier day (least absolute error).
-// bide carries the bus's live delay, which BC Transit's figure underweights.
-// Days fitted before the blend existed carry only c, a drift per lead minute.
-const LEAD_BANDS = [120, 300, 600, 900, 1200, Infinity];
-const band = (lead) => LEAD_BANDS.findIndex((b) => lead <= b);
 function features(i, p) {
-  const made = ev.made[i];
-  return [1, Math.max(0, ev.official[i] + ev.off[i] - made), Math.max(0, bide(i, p) - made), ev.sched[i] + ev.off[i] - made];
+  const o = ev.off[i];
+  return featuresAt(ev.made[i], ev.official[i] + o, bide(i, p), ev.sched[i] + o);
 }
 function bidePlus(i, p) {
-  const lead = Math.max(0, ev.official[i] + ev.off[i] - ev.made[i]);
-  const w = p.w?.[band(lead)];
-  if (!w) return Math.max(ev.official[i] + ev.off[i] + ((p.c || 0) * lead) / 60, ev.made[i] + 15);
-  const x = features(i, p);
-  return Math.max(ev.made[i] + w[0] * x[0] + w[1] * x[1] + w[2] * x[2] + w[3] * x[3], ev.made[i] + 15);
+  const o = ev.off[i];
+  return plusAt(ev.made[i], ev.official[i] + o, p.w ? bide(i, p) : 0, ev.sched[i] + o, p);
 }
 
 // Least absolute error by iteratively reweighted least squares.

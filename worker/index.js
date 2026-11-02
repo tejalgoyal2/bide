@@ -1,12 +1,13 @@
 import { DurableObject } from 'cloudflare:workers';
 import { feedTimestamp, decodeTripUpdates, decodeVehicles, decodeAlerts } from '../shared/gtfsrt.js';
 import { BOUNDS } from '../shared/geo.js';
+import { bideAt, plusAt } from '../shared/model.js';
 
 const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
 const OP = '?operatorIds=48';
 
-const CODE_VERSION = 6;
+const CODE_VERSION = 7;
 const TICK = 10_000; // vehicle feed refreshes about every 15 s
 const TRIP_EVERY = 60_000;
 const ALERT_EVERY = 300_000;
@@ -44,6 +45,21 @@ function compactTrips(feed) {
   });
 }
 
+// The settings fitted on the most recent scored day, and which model won it.
+let paramsCache = null;
+async function latestParams(env) {
+  if (paramsCache && Date.now() - paramsCache.at < 600_000) return paramsCache.p;
+  const row = await env.DB.prepare('SELECT date, summary FROM days ORDER BY date DESC LIMIT 1').first();
+  let p = { rho: 0.95, gamma: 0.5, beta: 0, c: 0, date: null, best: 'bidePlus' };
+  if (row) {
+    const s = JSON.parse(row.summary);
+    const best = ['bide', 'bidePlus'].sort((a, b) => s.overall[a].mae - s.overall[b].mae)[0];
+    p = { ...p, ...s.params.fitted, date: row.date, best, mae: { official: s.overall.official.mae, [best]: s.overall[best].mae } };
+  }
+  paramsCache = { at: Date.now(), p };
+  return p;
+}
+
 export class Recorder extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -58,6 +74,12 @@ export class Recorder extends DurableObject {
     this.live = null;
     this.delays = { ts: 0, d: {} };
     this.state = { vp: 0, tu: 0, al: 0, tuAt: 0, alAt: 0, gtfsName: '' };
+    // Live progress for the bus card: per trip, its last report and the last
+    // stop it was seen to reach; its timetable; its latest predictions.
+    this.track = new Map();
+    this.sched = new Map();
+    this.tu = null;
+    this.warmed = false;
     ctx.blockConcurrencyWhile(async () => {
       Object.assign(this.state, (await ctx.storage.get('state')) || {});
     });
@@ -76,6 +98,7 @@ export class Recorder extends DurableObject {
     await this.ctx.storage.setAlarm(Math.ceil((now + 1) / TICK) * TICK);
     const st = this.state;
     const full = this.sql.databaseSize > MAX_DB_BYTES;
+    if (!this.warmed) await this.warm().catch((e) => this.fail('warm: ' + e.message));
     const jobs = [this.record('vp', 'vehicleupdates.pb', full)];
     if (now - st.tuAt >= TRIP_EVERY) {
       st.tuAt = now;
@@ -101,8 +124,10 @@ export class Recorder extends DurableObject {
     if (!ts || ts === this.state[table] || full) return;
     this.state[table] = ts;
     let body = u8;
+    if (table === 'vp') this.observe(decodeVehicles(u8).vehicles);
     if (table === 'tu') {
       const feed = decodeTripUpdates(u8);
+      this.ingest(ts, feed.trips);
       // Each trip's current delay at its next stop, for the map's lateness view.
       const d = {};
       for (const t of feed.trips) if (t.stops.length) d[t.tripId] = t.stops[2];
@@ -110,6 +135,89 @@ export class Recorder extends DurableObject {
       body = new TextEncoder().encode(JSON.stringify(compactTrips(feed)));
     }
     this.sql.exec(`INSERT OR REPLACE INTO ${table} VALUES (?, ?)`, ts, await gzip(body));
+  }
+
+  // A stop counts as reached once a report shows the bus past it, or stopped
+  // at it; the moment is the midpoint of the reports either side, as the
+  // scoreboard does it. A gap over 90 s is too vague to use.
+  observe(vehicles) {
+    for (const v of vehicles) {
+      if (!v.tripId || v.seq < 0 || !v.ts) continue;
+      const o = this.track.get(v.tripId);
+      if (!o) { this.track.set(v.tripId, { t: v.ts, seq: v.seq, status: v.status, pass: null }); continue; }
+      if (v.ts <= o.t) continue;
+      const k = v.status === 1 ? v.seq : v.seq - 1, ko = o.status === 1 ? o.seq : o.seq - 1;
+      if (k > ko && v.ts - o.t <= 90) o.pass = { seq: k, A: (o.t + v.ts) / 2 };
+      o.t = v.ts; o.seq = v.seq; o.status = v.status;
+    }
+    const old = Date.now() / 1000 - 3 * 3600;
+    for (const [id, o] of this.track) if (o.t < old) this.track.delete(id);
+  }
+
+  ingest(ts, trips) {
+    const byTrip = new Map();
+    for (const t of trips) {
+      let sm = this.sched.get(t.tripId);
+      if (!sm) this.sched.set(t.tripId, (sm = new Map()));
+      for (let i = 0; i < t.stops.length; i += 3) sm.set(t.stops[i], t.stops[i + 1] - t.stops[i + 2]);
+      byTrip.set(t.tripId, t);
+    }
+    for (const id of this.sched.keys()) if (!byTrip.has(id) && !this.track.has(id)) this.sched.delete(id);
+    this.tu = { ts, byTrip };
+  }
+
+  // After a restart, replay the last half hour so the card works at once.
+  async warm() {
+    this.warmed = true;
+    const since = Math.floor(Date.now() / 1000) - 1800;
+    for (const r of this.sql.exec('SELECT ts, z FROM tu WHERE ts > ? ORDER BY ts', since).toArray()) {
+      const feed = JSON.parse(new TextDecoder().decode(await gunzip(new Uint8Array(r.z))));
+      this.ingest(r.ts, feed.map(([tripId, , , , , d]) => {
+        const stops = [];
+        let q = 0, t = 0, dl = 0;
+        for (let i = 0; i < d.length; i += 3) { q += d[i]; t += d[i + 1]; dl += d[i + 2]; stops.push(q, t, dl); }
+        return { tripId, stops, ids: [] };
+      }));
+    }
+    this.tu = null; // the next live poll brings stop ids too
+    for (const r of this.sql.exec('SELECT z FROM vp WHERE ts > ? ORDER BY ts', since + 900).toArray()) {
+      this.observe(decodeVehicles(await gunzip(new Uint8Array(r.z))).vehicles);
+    }
+  }
+
+  // The feed's clock, as the scoreboard reads it: buses just seen at a stop
+  // reveal a whole-hour error in the timetable times.
+  clockOffset(now) {
+    const d = [];
+    for (const [id, o] of this.track) {
+      const sm = this.sched.get(id);
+      if (o.pass && now - o.pass.A < 600 && sm?.has(o.pass.seq)) d.push(o.pass.A - sm.get(o.pass.seq));
+    }
+    if (d.length < 10) return 0;
+    d.sort((a, b) => a - b);
+    return Math.round(d[d.length >> 1] / 3600) * 3600;
+  }
+
+  // The next few stops of one trip: BC Transit's prediction beside bide's and
+  // bide+'s, worked out now with the latest fitted settings.
+  trip(id, p) {
+    const t = this.tu?.byTrip.get(id);
+    if (!t) return null;
+    const now = Date.now() / 1000, off = this.clockOffset(now);
+    const sm = this.sched.get(id), pass = this.track.get(id)?.pass;
+    let pj = -1, pS = 0, nS = 0;
+    if (pass) for (const [q, v] of sm) if (q <= pass.seq && q > pj) { pj = q; pS = v; }
+    let nq = Infinity;
+    for (const [q, v] of sm) if (q > pj && q < nq) { nq = q; nS = v; }
+    const stops = [];
+    for (let i = 0; i < t.stops.length && stops.length < 6; i += 3) {
+      const q = t.stops[i], official = t.stops[i + 1] + off, s = t.stops[i + 1] - t.stops[i + 2] + off;
+      if (q <= pj || !t.stops[i + 1] || official < now - 60) continue;
+      // official is what riders are shown, clock fault and all.
+      const bide = bideAt(now, s, pj >= 0 ? 1 : 0, pass?.A || 0, pS + off, nS ? nS + off : 0, p);
+      stops.push({ seq: q, id: t.ids[i / 3] || '', official: t.stops[i + 1], sched: Math.round(s), bide: Math.round(bide), plus: Math.round(plusAt(now, official, bide, s, p)) });
+    }
+    return { now: Math.round(now), feed: this.tu.ts, off, passed: pj >= 0 ? { seq: pj, at: Math.round(pass.A), delay: Math.round(pass.A - pS - off) } : null, stops };
   }
 
   noteGtfs(name) {
@@ -270,6 +378,15 @@ export default {
           'x-feed-ts': String(live.ts),
         },
       });
+    }
+
+    // One bus's next stops, BC Transit beside bide, for the bus card.
+    if (url.pathname === '/api/trip') {
+      const id = url.searchParams.get('id') || '';
+      if (!/^[\w:.-]{1,80}$/.test(id)) return new Response('bad id', { status: 400 });
+      const p = await latestParams(env);
+      const out = await rec.trip(id, p);
+      return json(out && { ...out, model: { from: p.date, best: p.best, mae: p.mae } }, 10);
     }
 
     if (url.pathname === '/api/delays') {

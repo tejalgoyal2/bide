@@ -155,6 +155,7 @@ export function decodeVehicles(u8) {
 
 // Stop-time updates come back flat: [seq, time, delay, seq, time, delay, ...].
 // time is the arrival time, or the departure time when no arrival is given.
+// ids holds each kept stop's stop_id, in the same order.
 export function decodeTripUpdates(u8) {
   const r = new Reader(u8);
   const out = [];
@@ -164,7 +165,7 @@ export function decodeTripUpdates(u8) {
     else if (f === 2 && wt === 2) {
       each(r, r.end(), (f2, wt2) => {
         if (f2 !== 3 || wt2 !== 2) return false;
-        const u = { tripId: '', routeId: '', startDate: '', vehicle: '', ts: 0, stops: [] };
+        const u = { tripId: '', routeId: '', startDate: '', vehicle: '', ts: 0, stops: [], ids: [] };
         each(r, r.end(), (f3) => {
           if (f3 === 1) {
             const t = trip(r, r.end());
@@ -172,9 +173,10 @@ export function decodeTripUpdates(u8) {
           } else if (f3 === 3) u.vehicle = vehicleId(r, r.end());
           else if (f3 === 4) u.ts = r.uint();
           else if (f3 === 2) {
-            let seq = -1, arr = 0, dep = 0, delay = 0, skipped = false;
+            let seq = -1, arr = 0, dep = 0, delay = 0, skipped = false, id = '';
             each(r, r.end(), (f4) => {
               if (f4 === 1) seq = r.uint();
+              else if (f4 === 4) id = r.str();
               else if (f4 === 2 || f4 === 3) {
                 each(r, r.end(), (f5) => {
                   if (f5 === 1) delay = r.int32();
@@ -186,7 +188,7 @@ export function decodeTripUpdates(u8) {
               } else if (f4 === 5) skipped = r.uint() === 1;
               else return false;
             });
-            if (!skipped) u.stops.push(seq, arr || dep, delay);
+            if (!skipped) { u.stops.push(seq, arr || dep, delay); u.ids.push(id); }
           } else return false;
         });
         out.push(u);
