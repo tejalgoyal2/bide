@@ -104,7 +104,8 @@ export function createWind(scene, surfaceY, onChange) {
 
   function update(dt, target, dist, mpp) {
     alpha += ((enabled && ready ? 1 : 0) - alpha) * Math.min(1, dt * 1.5);
-    mat.uniforms.uFade.value = alpha * THREE.MathUtils.clamp(1.3 - dist / 18000, 0.45, 1);
+    // The wind is a city-scale picture: it fades out as you come down to the streets.
+    mat.uniforms.uFade.value = alpha * THREE.MathUtils.clamp(1.3 - dist / 18000, 0.45, 1) * THREE.MathUtils.smoothstep(dist, 2400, 4200);
     mesh.visible = alpha > 0.01;
     if (!mesh.visible) return;
     clock += dt;

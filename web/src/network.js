@@ -96,10 +96,12 @@ export function createNetwork(scene, transit) {
       void main() {
         if (vFreq < 0.05) discard;
         float shimmer = 0.8 + 0.2 * sin(vAlong / max(30.0, uMpp * 9.0) - uTime * 2.2);
-        vec3 day = vec3(0.16, 0.19, 0.27);
-        vec3 night = vec3(0.78, 0.82, 1.0);
+        // Terracotta by day, pale moonlight by night; it gives way to the
+        // streets themselves once you're down among them.
+        vec3 day = vec3(0.8, 0.4, 0.27);
+        vec3 night = vec3(0.72, 0.8, 1.0);
         vec3 col = mix(day, night, uNight);
-        float a = mix(0.3, 0.32, uNight) * shimmer * uShow;
+        float a = mix(0.32, 0.3, uNight) * shimmer * uShow * smoothstep(0.7, 2.4, uMpp);
         gl_FragColor = vec4(applyHaze(col, vWorld), a);
         #include <colorspace_fragment>
       }`,

@@ -174,6 +174,7 @@ $('t-out').onchange = (e) => outages.setEnabled(e.target.checked);
 $('layers-toggle').onclick = () => {
   const open = $('layers').classList.toggle('open');
   $('layers-toggle').setAttribute('aria-expanded', open);
+  if (open) $('layer-list').open = true;
 };
 $('t-labels').onchange = (e) => ($('labels').style.display = e.target.checked ? '' : 'none');
 // Home: looking north over the Inner Harbour, downtown and on up the peninsula.
@@ -414,7 +415,7 @@ function refreshCard() {
   renderTrip();
 }
 setInterval(refreshCard, 1000);
-controls.state.onTap = (x, y) => select(busAtScreen(x, y));
+controls.state.onTap = (x, y) => { if (!eggs.tap(x, y)) select(busAtScreen(x, y)); };
 $('bus').querySelector('.close').onclick = () => select(null);
 $('b-follow').onclick = () => {
   if (!selected) return;
@@ -445,7 +446,9 @@ canvas.addEventListener('pointermove', (e) => {
   if (e.buttons) { tip.style.opacity = 0; return; }
   const b = busAtScreen(e.clientX, e.clientY);
   let g, w;
-  canvas.style.cursor = b ? 'pointer' : '';
+  const egg = !b && eggs.hover(e.clientX, e.clientY);
+  canvas.style.cursor = b || egg ? 'pointer' : '';
+  if (egg) { tip.style.opacity = 0; return; }
   const q = !b && quakeAtScreen(e.clientX, e.clientY);
   if (b) {
     const r = buses.routes[b.route];

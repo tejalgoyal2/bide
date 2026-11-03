@@ -44,22 +44,29 @@ export function createBuildings(scene, world) {
       void main() {
         bool roof = vU < 0.0;
         vec3 base = roof ? mix(vec3(0.84, 0.8, 0.74), vec3(0.93, 0.89, 0.82), vSeed)
-                         : mix(vec3(0.74, 0.7, 0.67), vec3(0.86, 0.8, 0.74), fract(vSeed * 7.3));
+                         : mix(vec3(0.68, 0.64, 0.62), vec3(0.82, 0.76, 0.7), fract(vSeed * 7.3));
         float lambert = max(dot(normalize(vN), uSun), 0.0);
         vec3 col = base * (uAmbient * 0.85 + uSunColor * lambert * 0.6);
         if (!roof) col *= 0.72 + 0.28 * smoothstep(0.0, 6.0, vZ); // darker where walls meet the street
         col = mix(col, col * vec3(0.16, 0.19, 0.33), uNight * 0.92);
 
-        // Lit windows: a grid of floors and bays, some on, slowly changing.
+        // Lit windows: a grid of floors and bays, some on. Window edges are
+        // anti-aliased, and where a window shrinks below a few pixels the grid
+        // gives way to its average glow, so nothing shimmers as the camera moves.
         if (!roof && uNight > 0.01) {
           vec2 cell = vec2(vU / 3.4, vZ / 3.3);
           vec2 id = floor(cell), f = fract(cell);
-          float win = step(0.28, f.x) * step(f.x, 0.72) * step(0.3, f.y) * step(f.y, 0.78);
+          vec2 fw = max(fwidth(cell), vec2(1e-4));
+          vec2 lo = smoothstep(vec2(0.28, 0.3) - fw, vec2(0.28, 0.3) + fw, f);
+          vec2 hi = 1.0 - smoothstep(vec2(0.72, 0.78) - fw, vec2(0.72, 0.78) + fw, f);
+          float win = lo.x * hi.x * lo.y * hi.y;
           win *= step(1.0, vTop - id.y * 3.3) * step(0.5, id.y + 0.6); // whole floors only
-          float on = step(vFlag > 1.5 ? 0.08 : 0.62, hash(id + vSeed * 97.0 + floor(uTime / 40.0 + vSeed * 9.0) * 0.013));
-          float near = smoothstep(2600.0, 1100.0, distance(vWorld, uCamPos));
+          // Which windows are on changes only every few minutes, one at a time.
+          float on = step(vFlag > 1.5 ? 0.08 : 0.62, hash(id + vSeed * 97.0 + floor(uTime / 180.0 + hash(id) * 7.0) * 0.013));
+          float detail = 1.0 - smoothstep(0.18, 0.4, max(fw.x, fw.y));
+          float avg = vFlag > 1.5 ? 0.18 : 0.08;
           vec3 warm = mix(vec3(1.0, 0.76, 0.42), vec3(0.95, 0.9, 0.8), hash(id * 1.7 + vSeed));
-          col += warm * uNight * (win * on * near * 0.95 + (1.0 - near) * 0.06);
+          col += warm * uNight * mix(avg * vec3(1.0, 0.85, 0.6) / warm, vec3(win * on * 0.95), detail);
         }
         // The Legislature: rows of bulbs along its eaves and cornices.
         if (vFlag > 0.5 && vFlag < 1.5 && uNight > 0.01) {

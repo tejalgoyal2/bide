@@ -13,6 +13,8 @@
   },
   "d1_databases": [{ "binding": "DB", "database_name": "bide", "database_id": "ff8f7d09-6008-4cd3-8cad-06191305a499" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Recorder"] }],
+  "routes": [{ "pattern": "bide.tgoyal.me", "custom_domain": true }],
+  "workers_dev": true,
   "triggers": { "crons": ["*/10 * * * *"] },
   "observability": { "enabled": true }
 }

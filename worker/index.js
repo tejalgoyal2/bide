@@ -289,7 +289,7 @@ export class Recorder extends DurableObject {
   // regenerated at most every 15 minutes to stay well inside the free tier.
   async nowLine(weather) {
     const cached = this.now || (await this.ctx.storage.get('now'));
-    if (cached && Date.now() - cached.at < 15 * 60_000) return cached;
+    if (cached && cached.v === 2 && Date.now() - cached.at < 15 * 60_000) return cached;
     if (!this.env.GROQ_API_KEY) return cached || null;
     const live = await this.latest();
     const v = live ? decodeVehicles(live.u8).vehicles : [];
@@ -320,9 +320,12 @@ export class Recorder extends DurableObject {
             {
               role: 'system',
               content:
-                "You write one short, warm, specific sentence (max 28 words) describing Victoria, BC's buses right now, " +
-                'like a local radio traffic line. Use only the facts given; never invent numbers, places or causes. ' +
-                'Do not state the clock time (the page shows it). No emoji, no hashtags.',
+                'You write a single sentence of at most 22 words about how Victoria, BC\'s buses are doing right now, ' +
+                'for the top of a live map. Write like a good local columnist: plain, specific, unhurried. ' +
+                'Pick the one or two facts that matter most (a detour, crowding, lateness, the weather if it affects riders) ' +
+                'and leave the rest out. Never list statistics; use at most one number, written as a digit. ' +
+                'Use only the facts given; never invent places, numbers or causes. ' +
+                'No clock times, no greetings, no exclamation marks, no emoji, no semicolons.',
             },
             { role: 'user', content: facts },
           ],
@@ -338,7 +341,7 @@ export class Recorder extends DurableObject {
         if (!res.ok) { why.push(`${model} ${res.status}`); if (res.status === 429 || res.status === 401) break; continue; }
         const text = (await res.json()).choices?.[0]?.message?.content?.trim().replace(/^"|"$/g, '');
         if (!text) { why.push(`${model} empty`); continue; }
-        this.now = { text, at: Date.now() };
+        this.now = { text, at: Date.now(), v: 2 };
         await this.ctx.storage.put('now', this.now);
         break;
       }

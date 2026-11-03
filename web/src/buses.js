@@ -88,7 +88,7 @@ const BUS_VERT = /* glsl */ `
   void main() {
     vec3 dir = vec3(cos(iHead), 0.0, -sin(iHead)), side = vec3(sin(iHead), 0.0, cos(iHead));
     float L = iPos.w;
-    vec3 dim = vec3(L, L * 0.27, L * 0.22);
+    vec3 dim = vec3(L, L * 0.26, L * 0.3); // a touch broader than life, so the roof arrow reads
     vL = position;
     vec3 w = iPos.xyz + dir * position.x * dim.x + vec3(0.0, (position.y + 0.5) * dim.y, 0.0) + side * position.z * dim.z;
     vN = dir * normal.x + vec3(0.0, normal.y, 0.0) + side * normal.z;
@@ -105,7 +105,16 @@ const BUS_FRAG = /* glsl */ `
     vec3 an = abs(vL) * 2.0; // 1 on the faces
     bool roof = vL.y > 0.49, front = vL.x > 0.49, back = vL.x < -0.49, sideF = abs(vL.z) > 0.49;
     vec3 glass = mix(vec3(0.16, 0.2, 0.26), vec3(1.0, 0.86, 0.6), uNight * 0.85);
-    if (roof) c = mix(c, vec3(0.97, 0.95, 0.9), 0.55);
+    if (roof) {
+      // A white arrow on the roof, pointing the way the bus is going.
+      vec2 p = vec2(vL.x / 0.3, vL.z);                  // in bus widths
+      float head = min((1.45 - p.x) * 0.48 - abs(p.y), p.x - 0.4);
+      float shaft = min(0.11 - abs(p.y), min(p.x + 1.1, 0.6 - p.x));
+      float sdf = max(head, shaft);
+      float aa = fwidth(sdf) * 1.2;
+      float arrow = smoothstep(-aa, aa, sdf);
+      c = mix(mix(c, vec3(1.0), 0.12), vec3(1.0, 0.99, 0.96), arrow * 0.95);
+    }
     if (sideF) {
       float band = step(-0.02, vL.y) * step(vL.y, 0.32) * step(abs(vL.x), 0.44);
       float pillar = step(0.86, fract((vL.x + 0.5) * 8.0));
@@ -315,7 +324,7 @@ export function createBuses(scene, transit, world, tagLayer) {
   function update(dt, mpp, camera, dist) {
     const now = Date.now() / 1000;
     // Smallest on-screen length of a bus, in pixels; life-size wins up close.
-    const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 1500, 18, 32), 18, 32);
+    const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 1200, 18, 40), 18, 40);
     haze.copy(shared.uHaze.value);
     list.length = 0;
     let i = 0, tagN = 0;

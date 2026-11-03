@@ -372,12 +372,12 @@ export async function createWorld(scene, map) {
 // casing, then the fill on top.
 const ROAD = {
   //         width m, min px, casing px, fill, casing, night glow, lift
-  highway: [24, 2.4, 1.6, '#ffc773', '#d98c3d', 1.0, 3.2],
-  major: [15, 1.7, 1.3, '#fff2c9', '#d4b07a', 0.75, 3.0],
-  medium: [11, 1.3, 1.1, '#fffaf0', '#d8c4a0', 0.55, 2.8],
-  minor: [7, 0.8, 0.7, '#fffdf6', '#ddcaa8', 0.2, 2.6],
-  path: [2.2, 0.45, 0, '#fbf3e1', '#fbf3e1', 0.04, 2.4],
-  rail: [3, 0.7, 0, '#9a8a78', '#9a8a78', 0.15, 2.5],
+  highway: [17, 2.6, 1.2, '#f7d48a', '#bf8f45', 0.8, 3.2],
+  major: [11, 2.0, 1.1, '#ffffff', '#b8a487', 0.46, 3.0],
+  medium: [8.5, 1.5, 0.9, '#fffefa', '#c4b399', 0.24, 2.8],
+  minor: [6, 0.9, 0.6, '#fdfaf3', '#d2c4ad', 0.04, 2.6],
+  path: [1.8, 0.35, 0, '#f4ead7', '#f4ead7', 0.0, 2.4],
+  rail: [2.4, 0.6, 0, '#a0907e', '#a0907e', 0.1, 2.5],
   ferry: [3, 0.9, 0, '#fdfbf4', '#fdfbf4', 0.25, 1.0],
 };
 
@@ -481,7 +481,10 @@ function buildRoads(map) {
           void main() {
             if (uDash > 0.5 && fract(vAlong / max(60.0, uMpp * 14.0)) > 0.55) discard;
             vec3 day = uColor * (uAmbient * 0.5 + uSunColor * 0.55);
-            vec3 night = mix(uColor * vec3(0.18, 0.2, 0.32), vec3(1.0, 0.72, 0.38) * 1.15, uGlow);
+            // At night streets sink into the dark; lit roads carry a row of
+            // sodium lamps, visible as pearls of light once you're close.
+            float lamps = 0.78 + 0.45 * pow(0.5 + 0.5 * cos(vAlong * 6.2832 / 36.0), 10.0) * (1.0 - smoothstep(1.2, 3.5, uMpp));
+            vec3 night = mix(uColor * vec3(0.2, 0.22, 0.34), vec3(1.0, 0.74, 0.46) * lamps, uGlow);
             vec3 col = mix(day, night, uNight);
             // Small streets fade out when seen from far away.
             float a = 1.0 - uFade * smoothstep(3.0, 9.0, uMpp);
