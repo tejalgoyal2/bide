@@ -19,6 +19,7 @@
     <canvas id="scene"></canvas>
     <div id="labels"></div>
     <div id="tags"></div>
+    <div id="pins"></div>
 
     <div id="veil">
       <div class="veil-inner">
@@ -36,6 +37,7 @@
         <span id="clock">--:--</span>
         <span id="weather"></span>
       </div>
+      <div class="brand-meta"><span id="air" class="air"></span></div>
       <div id="tide" class="brand-meta"></div>
       <p id="now" class="now"></p>
       <button id="alerts-open" class="alerts-chip" hidden></button>
@@ -53,8 +55,11 @@
       <details id="layer-list" open>
         <summary>Layers</summary>
         <label class="toggle"><input type="checkbox" id="t-network" checked /><span></span>Service frequency</label>
+        <label class="toggle"><input type="checkbox" id="t-bldg" checked /><span></span>Buildings</label>
         <label class="toggle"><input type="checkbox" id="t-life" checked /><span></span>Harbour life</label>
         <label class="toggle"><input type="checkbox" id="t-weather" checked /><span></span>Live weather</label>
+        <label class="toggle"><input type="checkbox" id="t-wind" checked /><span></span>Wind</label>
+        <label class="toggle"><input type="checkbox" id="t-quake" checked /><span></span>Earthquakes<small id="n-quake" class="muted"></small></label>
         <label class="toggle"><input type="checkbox" id="t-road" checked /><span></span>Road works<small id="n-road" class="muted"></small></label>
         <label class="toggle"><input type="checkbox" id="t-out" checked /><span></span>Power outages<small id="n-out" class="muted"></small></label>
         <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
@@ -130,7 +135,7 @@
       <p class="muted small">
         Victoria sits on the traditional territories of the Lekwungen-speaking peoples, the Songhees and Esquimalt
         Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
-        Transit open data. Road events: DriveBC. Power outages: BC Hydro. Weather: Open-Meteo. Tides: Fisheries and Oceans Canada.
+        Transit open data. Road events: DriveBC. Power outages: BC Hydro. Earthquakes: USGS. Weather, wind and air quality: Open-Meteo. Buildings: OpenStreetMap. Tides: Fisheries and Oceans Canada.
       </p>
     </article>
 

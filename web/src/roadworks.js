@@ -38,6 +38,7 @@ export function createRoadworks(scene, surfaceY, onChange) {
     transparent: true,
     depthTest: false,
     depthWrite: false,
+    side: THREE.DoubleSide,
   });
   let mesh = null, events = [], enabled = true, fade = 1;
 

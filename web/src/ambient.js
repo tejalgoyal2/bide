@@ -33,7 +33,7 @@ function waterMask(mapCanvas) {
 
 // --- shapes (top views, nose toward -z, one unit long) ----------------------
 function planeShape() {
-  const half = [[0, -0.5], [0.06, -0.38], [0.06, -0.12], [0.55, -0.1], [0.55, 0.02], [0.06, 0.04], [0.05, 0.34], [0.2, 0.4], [0.2, 0.47], [0, 0.45]];
+  const half = [[0, -0.5], [0.06, -0.38], [0.06, -0.16], [0.56, -0.13], [0.56, 0.04], [0.06, 0.06], [0.05, 0.34], [0.2, 0.4], [0.2, 0.47], [0, 0.45]];
   const s = new THREE.Shape();
   half.forEach(([x, y], i) => (i ? s.lineTo(x, y) : s.moveTo(x, y)));
   for (let i = half.length - 2; i > 0; i--) s.lineTo(-half[i][0], half[i][1]);
@@ -95,8 +95,23 @@ export function createAmbient(scene, world) {
   const isWater = waterMask(world.mapCanvas);
   const group = new THREE.Group();
   scene.add(group);
-  const fadeMat = (color, opacity = 1) =>
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: opacity === 1, side: THREE.DoubleSide, fog: false });
+  // Hulls and fuselages dim to ink at night; their lights don't.
+  const tinted = [];
+  const fadeMat = (color, opacity = 1) => {
+    const m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: opacity === 1, side: THREE.DoubleSide, fog: false });
+    tinted.push([m, new THREE.Color(color)]);
+    return m;
+  };
+  const dotGeo = new THREE.CircleGeometry(1, 12).rotateX(-Math.PI / 2);
+  const light = (color, r, x, y, z) => {
+    const m = new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, fog: false }));
+    m.scale.setScalar(r);
+    m.position.set(x, y, z);
+    m.renderOrder = 31;
+    m.userData.light = true;
+    return m;
+  };
+  const nightTint = new THREE.Color();
 
   // Wakes: one pool of foam dots, each fading over a few seconds.
   const FOAM = 1400;
@@ -159,10 +174,17 @@ export function createAmbient(scene, world) {
     stripe.scale.set(0.35, 1, 0.9);
     stripe.position.y = 0.02;
     body.add(stripe);
+    const fin = new THREE.Mesh(sailShape(), fadeMat(livery[i]));
+    fin.scale.set(1, 0.16, 0.42);
+    fin.position.z = 0.24;
+    body.add(fin);
+    body.add(light('#ff4a3d', 0.035, -0.56, 0.05, -0.04), light('#3dff8a', 0.035, 0.56, 0.05, -0.04));
+    const strobe = light('#ffffff', 0.05, 0, 0.12, 0.44);
+    body.add(strobe);
     const shadow = new THREE.Mesh(planeGeo, fadeMat('#20303a', 0.22));
     body.renderOrder = 24; stripe.renderOrder = 25; shadow.renderOrder = 7;
     group.add(body, shadow);
-    planes.push({ body, shadow, s: 0, dir: i ? -1 : 1, wait: 6 + i * 22, active: false });
+    planes.push({ body, shadow, strobe, s: 0, dir: i ? -1 : 1, wait: 6 + i * 22, active: false });
   }
   // Speed along the path: taxi, take-off run, climb-out (m/s, drawn a bit brisk).
   const floatSpeed = (u) => (u < 0.12 ? 7 : u < FLOAT_WATER ? 7 + ((u - 0.12) / (FLOAT_WATER - 0.12)) * 45 : 62);
@@ -256,6 +278,10 @@ export function createAmbient(scene, world) {
     const boost = (metres, px) => Math.max(metres, px * mpp);
     foam.material.uniforms.uPx.value = THREE.MathUtils.clamp(4 / Math.sqrt(mpp), 1.2, 4) * Math.min(2, devicePixelRatio);
 
+    const night = shared.uNight.value, lightLevel = 0.25 + 0.75 * night;
+    nightTint.setRGB(1 - 0.72 * night, 1 - 0.68 * night, 1 - 0.5 * night);
+    for (const [m, c] of tinted) m.color.copy(c).multiply(nightTint);
+
     // Floatplanes.
     for (const pl of planes) {
       if (!pl.active) {
@@ -286,7 +312,8 @@ export function createAmbient(scene, world) {
       pl.shadow.position.set(p.x + p.y * 0.35, 0.8, p.z + p.y * 0.2);
       pl.shadow.rotation.set(0, e.y, 0);
       pl.shadow.scale.setScalar(size);
-      pl.body.material.opacity = pl.body.children[0].material.opacity = a;
+      pl.body.traverse((m) => m.material && (m.material.opacity = m.userData.light ? a * lightLevel : a));
+      pl.strobe.material.opacity = a * (Math.sin(t * 9 + pl.dir * 1.3) > 0.85 ? 1 : 0.1);
       pl.shadow.material.opacity = 0.22 * a * Math.max(0.15, 1 - p.y / 900);
       if (p.y < 10 && floatSpeed(u) > 6) for (let k = 0; k < 2; k++) spray(p.x - tan.x * size * 0.4, p.z - tan.z * size * 0.4, size * 0.35, 4 + Math.random() * 3, t);
     }
@@ -340,6 +367,10 @@ export function createAmbient(scene, world) {
     }
 
     for (const b of boats) {
+      if (!b.lamp) {
+        b.lamp = light(b.kind === 'sail' ? '#fff3d6' : '#ffc46b', b.kind === 'coho' ? 0.05 : 0.11, 0, 0.3, b.kind === 'coho' ? -0.1 : 0.05);
+        b.g.add(b.lamp);
+      }
       const a = fade * (b.kind === 'coho' ? b.edge : 1);
       b.g.visible = a > 0.01;
       b.g.position.set(b.x, 0.8, b.z);
@@ -347,7 +378,7 @@ export function createAmbient(scene, world) {
       b.g.scale.setScalar(b.size);
       // Sails heel a little with the wind.
       if (b.g.userData.sail) b.g.userData.sail.rotation.z = 0.18 * Math.sin(t * 0.3 + b.x);
-      b.g.traverse((m) => m.material && (m.material.opacity = a));
+      b.g.traverse((m) => m.material && (m.material.opacity = m.userData.light ? a * lightLevel : a));
     }
 
     // Gulls: lazy circles over the shore, the circles themselves drifting.

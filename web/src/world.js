@@ -463,7 +463,8 @@ function buildRoads(map) {
           void main() {
             vec2 uv = (vec2(position.x, -position.z) - uExtent.xy) / uExtent.zw;
             float h = uOnSea > 0.5 ? 0.0 : texture2D(uHeight, uv).r * uExag * uRise;
-            float w = max(uWidth, uMinPx * uMpp) * 0.5 + uExtraPx * uMpp * 0.5;
+            // Streets slim down at street level, where buildings stand beside them.
+            float w = max(uWidth * mix(0.6, 1.0, smoothstep(0.8, 4.0, uMpp)), uMinPx * uMpp) * 0.5 + uExtraPx * uMpp * 0.5;
             vec3 p = position + vec3(miter.x, 0.0, miter.y) * w;
             p.y = h + uLift * max(1.0, uMpp * 0.6);
             vec4 wp = modelMatrix * vec4(p, 1.0);
@@ -485,7 +486,7 @@ function buildRoads(map) {
             // Small streets fade out when seen from far away.
             float a = 1.0 - uFade * smoothstep(3.0, 9.0, uMpp);
             // Ferry routes are a whisper on the water, not a road.
-            a *= mix(1.0, 0.4, uOnSea);
+            a *= mix(1.0, 0.4 * smoothstep(2.0, 6.0, uMpp), uOnSea); // and fade out up close
             if (a < 0.02) discard;
             gl_FragColor = vec4(applyHaze(col, vWorld), a);
             #include <colorspace_fragment>

@@ -9,6 +9,10 @@ import { createWeather } from './weather.js';
 import { createOutages } from './outages.js';
 import { createAmbient } from './ambient.js';
 import { createRoadworks } from './roadworks.js';
+import { createBuildings } from './buildings.js';
+import { createWind } from './wind.js';
+import { createQuakes } from './quakes.js';
+import { createFocus } from './focus.js';
 
 const $ = (id) => document.getElementById(id);
 document.body.classList.add('loading');
@@ -35,6 +39,14 @@ const network = createNetwork(scene, transit);
 const labels = createLabels($('labels'), world.heightAt);
 const weather = createWeather(scene, showConditions);
 const ambient = createAmbient(scene, world);
+const buildings = createBuildings(scene, world);
+const wind = createWind(scene, world.surfaceY);
+const focus = createFocus(scene, world, $('pins'));
+const quakes = createQuakes(scene, world.surfaceY, (list) => {
+  const day = list.filter((q) => Date.now() - q.time < 86400e3).length;
+  $('n-quake').textContent = list.length ? ` · ${day ? `${day} today` : `${list.length} this week`}` : ' · quiet week';
+  $('n-quake').title = `${list.length} in the past week within 250 km`;
+});
 const roadworks = createRoadworks(scene, world.surfaceY, (ev) => ($('n-road').textContent = ev.length ? ` · ${ev.length}` : ''));
 const outages = createOutages(scene, world.surfaceY, (list) => {
   const homes = list.reduce((s, o) => s + o.out, 0);
@@ -125,6 +137,9 @@ setMode('lateness');
 $('t-network').onchange = (e) => network.setVisible(e.target.checked);
 $('t-weather').onchange = (e) => weather.setEnabled(e.target.checked);
 $('t-life').onchange = (e) => ambient.setEnabled(e.target.checked);
+$('t-bldg').onchange = (e) => buildings.setEnabled(e.target.checked);
+$('t-wind').onchange = (e) => wind.setEnabled(e.target.checked);
+$('t-quake').onchange = (e) => quakes.setEnabled(e.target.checked);
 $('t-road').onchange = (e) => roadworks.setEnabled(e.target.checked);
 $('t-out').onchange = (e) => outages.setEnabled(e.target.checked);
 $('layers-toggle').onclick = () => {
@@ -144,6 +159,13 @@ function showConditions(s) {
   if (s.weather) {
     const w = s.weather;
     $('weather').textContent = `${w.temp}° · ${w.text} · wind ${w.wind} km/h ${w.from}`;
+  }
+  if (s.air) {
+    const a = s.air.aqi;
+    const word = a <= 50 ? 'good' : a <= 100 ? 'moderate' : a <= 150 ? 'poor for some' : a <= 200 ? 'unhealthy' : 'very unhealthy';
+    $('air').textContent = `Air ${word} · AQI ${a}`;
+    $('air').className = 'air ' + (a <= 50 ? 'ok' : a <= 100 ? 'meh' : 'bad');
+    $('air').title = `US AQI ${a}; fine particles (PM2.5) ${s.air.pm.toFixed(0)} µg/m³. From Open-Meteo's air-quality model.`;
   }
   if (s.tide) {
     const t = s.tide;
@@ -286,6 +308,7 @@ function busAtScreen(x, y, radius = 26) {
 }
 // Next stops: BC Transit's prediction beside bide's, live from /api/trip.
 const stopName = new Map(transit.stops.map((st) => [st[0], st[1]]));
+const stopAt = new Map(transit.stops.map((st) => [st[0], st]));
 let tripData = null, tripTimer = 0;
 async function loadTrip() {
   clearTimeout(tripTimer);
@@ -308,13 +331,13 @@ const DATE_FMT = { month: 'short', day: 'numeric', timeZone: 'UTC' };
 function renderTrip() {
   const d = tripData;
   $('b-next').hidden = !d?.stops?.length;
-  if (!d?.stops?.length) return;
+  if (!d?.stops?.length) { focus.setStops([]); return; }
   const now = Date.now() / 1000 + d.skew;
   const key = d.model.best === 'bide' ? 'bide' : 'plus';
   $('b-model').textContent = key === 'bide' ? 'bide' : 'bide+';
-  $('b-stops').innerHTML = d.stops
-    .filter((st) => Math.max(st.official, st[key]) > now - 60)
-    .slice(0, 4)
+  const shown = d.stops.filter((st) => Math.max(st.official, st[key]) > now - 60).slice(0, 4);
+  focus.setStops(shown.filter((st) => stopAt.has(st.id)).map((st) => ({ x: stopAt.get(st.id)[2], y: stopAt.get(st.id)[3], label: fmtMin(st[key], now) })));
+  $('b-stops').innerHTML = shown
     .map((st) => {
       const diff = Math.round((st[key] - st.official) / 60);
       const tag = diff && Math.abs(diff) < 30 ? `<i class="${diff > 0 ? 'later' : 'sooner'}">${diff > 0 ? '+' : '−'}${Math.abs(diff)}</i>` : '';
@@ -333,8 +356,10 @@ function select(b) {
   if (b !== selected) { tripData = null; $('b-next').hidden = true; }
   selected = b;
   $('bus').classList.toggle('hidden', !b);
+  document.body.classList.toggle('has-bus', !!b);
+  const r = b && buses.routes[b.route];
+  focus.set(b, r?.color ?? '#e07a5f');
   if (!b) { controls.state.follow = null; return; }
-  const r = buses.routes[b.route];
   $('b-route').textContent = r?.short ?? '?';
   $('b-route').style.background = r?.color ?? '#777';
   $('b-route').style.color = r?.text ?? '#fff';
@@ -370,15 +395,34 @@ $('b-follow').onclick = () => {
 };
 
 // Hovering a column says what it means.
+const ago = (t) => {
+  const m = (Date.now() - t) / 60e3;
+  return m < 60 ? `${Math.round(m)} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+function quakeAtScreen(x, y) {
+  const v = new THREE.Vector3();
+  let best = null, bd = 22;
+  for (const q of quakes.list) {
+    v.set(q.x, q.on ? world.surfaceY(q.x, q.y) : 0, -q.y).project(camera);
+    if (v.z > 1) continue;
+    const d = Math.hypot(((v.x + 1) / 2) * innerWidth - x, ((1 - v.y) / 2) * innerHeight - y);
+    if (d < bd) { bd = d; best = q; }
+  }
+  return best;
+}
 canvas.addEventListener('pointermove', (e) => {
   const tip = $('tooltip');
   if (e.buttons) { tip.style.opacity = 0; return; }
   const b = busAtScreen(e.clientX, e.clientY);
   let g, w;
   canvas.style.cursor = b ? 'pointer' : '';
+  const q = !b && quakeAtScreen(e.clientX, e.clientY);
   if (b) {
     const r = buses.routes[b.route];
     tip.innerHTML = `<b>${r?.short ?? ''}</b> ${b.headsign || r?.name || ''}`;
+  } else if (q) {
+    tip.innerHTML = `<b class="tip-kind">M${q.mag.toFixed(1)} earthquake · ${ago(q.time)}</b><br>` +
+      `<span class="tip-text">${q.km} km ${q.bearing} of Victoria, ${q.depth} km deep${q.place ? ` · ${esc(q.place)}` : ''}</span>`;
   } else if (roadworks.visible && (g = controls.groundAt(e.clientX, e.clientY)) && (w = roadworks.near(g.x, -g.z, Math.max(60, controls.state.dist / 60)))) {
     tip.innerHTML = `<b class="tip-kind">${esc(w.kind)}</b><br><span class="tip-text">${esc(w.text)}</span>`;
   } else if (network.visible) {
@@ -411,6 +455,7 @@ setTimeout(() => document.body.classList.remove('loading'), 2800);
 
 // --- loop -----------------------------------------------------------------
 const clock = new THREE.Clock();
+const SMOKE = new THREE.Color('#c99a62');
 let statT = 0, nightClass = null;
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
@@ -426,6 +471,9 @@ function frame() {
     setHour(victoriaClock().hour, { live: true });
   }
   const sun = sky.set(time.live ? new Date() : dateForHour(time.hour));
+  // Wildfire smoke: high fine-particle levels tint the haze amber.
+  const pm = weather.state.air?.pm || 0;
+  if (pm > 25) shared.uHaze.value.lerp(SMOKE, Math.min(0.45, (pm - 25) / 200));
   const isNight = sun.night > 0.5;
   if (isNight !== nightClass) {
     document.body.classList.toggle('night', isNight);
@@ -446,6 +494,10 @@ function frame() {
   network.update(dt);
   outages.update(dt, mpp, t);
   ambient.update(dt, mpp, t);
+  buildings.update(dt, s.dist);
+  wind.update(dt, s.target, s.dist, mpp);
+  quakes.update(dt, mpp);
+  focus.update(dt, camera, mpp);
   roadworks.update(dt, mpp);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);
@@ -465,4 +517,4 @@ renderer.setAnimationLoop(frame);
 // ?at=8.5 opens the map at 8:30 am instead of now; handy for sharing a moment.
 const at = new URLSearchParams(location.search).get('at');
 if (at != null && !Number.isNaN(+at)) setHour(+at);
-window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame };
+window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame, select };

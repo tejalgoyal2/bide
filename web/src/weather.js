@@ -13,7 +13,7 @@ const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const TIDE_STATION = '5cebf1df3d0f4a073c4bbd1e'; // Victoria Harbour, 07120
 
 export function createWeather(scene, onChange) {
-  const state = { weather: null, tide: null, enabled: true };
+  const state = { weather: null, tide: null, air: null, enabled: true };
 
   // Rain: streaks that fall around the camera's target and recycle.
   const N = 9000;
@@ -105,8 +105,23 @@ export function createWeather(scene, onChange) {
     }
   }
 
+  // Air quality (Open-Meteo's CAMS model): the US AQI and fine particles.
+  // Wildfire smoke shows up as PM2.5; the map's haze takes on its colour.
+  async function loadAir() {
+    try {
+      const u = 'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=48.43&longitude=-123.37&current=us_aqi,pm2_5';
+      const c = (await (await fetch(u)).json()).current;
+      state.air = { aqi: Math.round(c.us_aqi), pm: c.pm2_5 };
+      onChange(state);
+    } catch (e) {
+      console.warn('air', e);
+    }
+  }
+
   loadWeather();
   loadTide();
+  loadAir();
+  setInterval(loadAir, 30 * 60e3);
   setInterval(loadWeather, 10 * 60e3);
   setInterval(loadTide, 15 * 60e3);
 
