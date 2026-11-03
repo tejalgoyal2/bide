@@ -13,6 +13,9 @@ import { createBuildings } from './buildings.js';
 import { createWind } from './wind.js';
 import { createQuakes } from './quakes.js';
 import { createFocus } from './focus.js';
+import { createStreets } from './streets.js';
+import { createNews } from './news.js';
+import { createEggs } from './eggs.js';
 
 const $ = (id) => document.getElementById(id);
 document.body.classList.add('loading');
@@ -42,6 +45,9 @@ const ambient = createAmbient(scene, world);
 const buildings = createBuildings(scene, world);
 const wind = createWind(scene, world.surfaceY);
 const focus = createFocus(scene, world, $('pins'));
+const streets = createStreets($('streets'), world.surfaceY);
+const news = createNews($('news-pins'), $('news-ticker'), world.surfaceY);
+const eggs = createEggs(scene, $('eggs'), world.surfaceY);
 const quakes = createQuakes(scene, world.surfaceY, (list) => {
   const day = list.filter((q) => Date.now() - q.time < 86400e3).length;
   $('n-quake').textContent = list.length ? ` · ${day ? `${day} today` : `${list.length} this week`}` : ' · quiet week';
@@ -140,6 +146,29 @@ $('t-life').onchange = (e) => ambient.setEnabled(e.target.checked);
 $('t-bldg').onchange = (e) => buildings.setEnabled(e.target.checked);
 $('t-wind').onchange = (e) => wind.setEnabled(e.target.checked);
 $('t-quake').onchange = (e) => quakes.setEnabled(e.target.checked);
+$('t-streets').onchange = (e) => streets.setEnabled(e.target.checked);
+$('t-news').onchange = (e) => news.setEnabled(e.target.checked);
+
+// Turning the map: buttons, a compass that points north (tap it to face
+// north again), Q and E on a keyboard; right-drag or a two-finger twist too.
+const turn = (by) => controls.flyTo({ azimuth: controls.state.azimuth + by }, 700);
+$('rot-l').onclick = () => turn(-Math.PI / 4);
+$('rot-r').onclick = () => turn(Math.PI / 4);
+$('compass').onclick = () => {
+  const a = controls.state.azimuth;
+  controls.flyTo({ azimuth: a - Math.atan2(Math.sin(a), Math.cos(a)) }, 900);
+};
+addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea') || e.metaKey || e.ctrlKey) return;
+  if (e.key === 'q' || e.key === 'Q') turn(-Math.PI / 8);
+  if (e.key === 'e' || e.key === 'E') turn(Math.PI / 8);
+  if (e.key === 'n' || e.key === 'N') $('compass').click();
+});
+// Psst: the logo's dot calls the orcas.
+document.querySelector('#brand .wordmark').addEventListener('click', () => {
+  eggs.orcas();
+  controls.flyTo({ x: -1300, z: 5900, dist: 2600, polar: 1.0, azimuth: 0.15 }, 2600);
+});
 $('t-road').onchange = (e) => roadworks.setEnabled(e.target.checked);
 $('t-out').onchange = (e) => outages.setEnabled(e.target.checked);
 $('layers-toggle').onclick = () => {
@@ -359,6 +388,7 @@ function select(b) {
   document.body.classList.toggle('has-bus', !!b);
   const r = b && buses.routes[b.route];
   focus.set(b, r?.color ?? '#e07a5f');
+  buses.setSelected(b);
   if (!b) { controls.state.follow = null; return; }
   $('b-route').textContent = r?.short ?? '?';
   $('b-route').style.background = r?.color ?? '#777';
@@ -498,6 +528,10 @@ function frame() {
   wind.update(dt, s.target, s.dist, mpp);
   quakes.update(dt, mpp);
   focus.update(dt, camera, mpp);
+  streets.update(camera, s.target, s.dist);
+  news.update(camera, s.dist);
+  eggs.update(dt, camera, s.dist, mpp);
+  $('needle').style.transform = `rotate(${s.azimuth}rad)`;
   roadworks.update(dt, mpp);
   weather.update(s.target, s.dist);
   labels.update(camera, s.dist, shared.uRise.value);

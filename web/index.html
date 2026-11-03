@@ -19,7 +19,10 @@
     <canvas id="scene"></canvas>
     <div id="labels"></div>
     <div id="tags"></div>
+    <div id="streets"></div>
     <div id="pins"></div>
+    <div id="news-pins"></div>
+    <div id="eggs"></div>
 
     <div id="veil">
       <div class="veil-inner">
@@ -40,6 +43,7 @@
       <div class="brand-meta"><span id="air" class="air"></span></div>
       <div id="tide" class="brand-meta"></div>
       <p id="now" class="now"></p>
+      <a id="news-ticker" class="ticker" target="_blank" rel="noopener" hidden></a>
       <button id="alerts-open" class="alerts-chip" hidden></button>
     </header>
 
@@ -62,7 +66,9 @@
         <label class="toggle"><input type="checkbox" id="t-quake" checked /><span></span>Earthquakes<small id="n-quake" class="muted"></small></label>
         <label class="toggle"><input type="checkbox" id="t-road" checked /><span></span>Road works<small id="n-road" class="muted"></small></label>
         <label class="toggle"><input type="checkbox" id="t-out" checked /><span></span>Power outages<small id="n-out" class="muted"></small></label>
+        <label class="toggle"><input type="checkbox" id="t-news" checked /><span></span>Local news</label>
         <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
+        <label class="toggle"><input type="checkbox" id="t-streets" checked /><span></span>Street names</label>
       </details>
       <button id="home" class="ghost">Recentre on Victoria</button>
     </aside>
@@ -89,6 +95,14 @@
       <button id="live" class="on">Live</button>
       <div id="day-type"></div>
     </footer>
+
+    <nav id="nav" class="card" aria-label="Turn the map">
+      <button id="rot-l" title="Turn left (Q)" aria-label="Turn left">&#8634;</button>
+      <button id="compass" title="Face north (N) · right-drag or twist with two fingers to turn" aria-label="Face north">
+        <svg id="needle" viewBox="0 0 24 24" width="22" height="22"><path d="M12 3 L15.5 12 H8.5 Z" fill="#e0774f"/><path d="M12 21 L8.5 12 H15.5 Z" fill="currentColor" opacity="0.45"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
+      </button>
+      <button id="rot-r" title="Turn right (E)" aria-label="Turn right">&#8635;</button>
+    </nav>
 
     <div id="tooltip"></div>
 
@@ -135,7 +149,7 @@
       <p class="muted small">
         Victoria sits on the traditional territories of the Lekwungen-speaking peoples, the Songhees and Esquimalt
         Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
-        Transit open data. Road events: DriveBC. Power outages: BC Hydro. Earthquakes: USGS. Weather, wind and air quality: Open-Meteo. Buildings: OpenStreetMap. Tides: Fisheries and Oceans Canada.
+        Transit open data. Road events: DriveBC. Power outages: BC Hydro. Earthquakes: USGS. Headlines: CHEK, Times Colonist, Victoria News, Victoria Buzz. Weather, wind and air quality: Open-Meteo. Buildings: OpenStreetMap. Tides: Fisheries and Oceans Canada.
       </p>
     </article>
 

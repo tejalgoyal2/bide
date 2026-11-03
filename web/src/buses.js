@@ -1,16 +1,12 @@
 // Live buses. Each report is snapped onto its route's shape, and between
 // reports the bus keeps rolling at its recent speed, so it glides rather than
-// jumping every fifteen seconds. A bus is drawn as a flat token that always
-// faces the screen (a disc with a cream ring and a heading caret), so it stays
-// crisp at any tilt and never sinks into a hillside, plus a short trail along
-// the road it just travelled.
+// jumping every fifteen seconds. Each is drawn as a small 3D bus.
 import * as THREE from 'three';
 import { decodeVehicles } from '../../shared/gtfsrt.js';
 import { toXY } from '../../shared/geo.js';
 import { shared, CORE_C, CORE_R } from './world.js';
 
 const MAX = 400;
-const TRAIL_PTS = 16;
 const OCC = ['Empty', 'Many seats', 'Few seats', 'Standing room', 'Crushed standing', 'Full', 'Not accepting passengers'];
 const OCC_COLOR = ['#3f9b8f', '#3f9b8f', '#e2a03f', '#d9643f', '#9c3d6b', '#9c3d6b', '#9c3d6b'];
 
@@ -78,56 +74,89 @@ function pointAt(shape, s, out) {
   return out;
 }
 
-// Tokens are drawn in screen space: each instance is a quad centred on the
-// bus, sized in pixels. The fragment shader draws, in units of the disc's
-// radius: a soft shadow, the cream ring, the coloured disc, a caret pointing
-// along the road, and a ripple while the bus is stopped at a stop.
-const TOKEN_VERT = /* glsl */ `
-  attribute vec3 iPos;
-  attribute vec4 iCol;   // rgb, alpha
-  attribute vec3 iShape; // screen angle, radius in px, ripple phase (<0: none)
-  uniform vec2 uView;
-  varying vec2 vP;
+// Each bus is a small 3D model: one instanced box, shaped and painted in the
+// shader (body in the bus's colour, a band of windows, a pale roof, lights
+// front and back after dark). Up close it is life-size; further out it keeps
+// a minimum size on screen so the whole network stays readable. Under it, a
+// soft shadow, a slow pulse while it waits at a stop, and a ring if selected.
+const BUS_VERT = /* glsl */ `
+  attribute vec4 iPos;  // ground position, length (m)
+  attribute vec4 iCol;  // rgb, alpha
+  attribute float iHead;
+  varying vec3 vL, vN, vW;
   varying vec4 vCol;
-  varying vec3 vShape;
-  const float QUAD = 2.6;
   void main() {
-    vec4 c = projectionMatrix * viewMatrix * vec4(iPos, 1.0);
-    vP = position.xy * 2.0 * QUAD;
-    c.xy += vP * iShape.y * 2.0 / uView * c.w;
-    gl_Position = c;
-    vCol = iCol;
-    vShape = iShape;
+    vec3 dir = vec3(cos(iHead), 0.0, -sin(iHead)), side = vec3(sin(iHead), 0.0, cos(iHead));
+    float L = iPos.w;
+    vec3 dim = vec3(L, L * 0.27, L * 0.22);
+    vL = position;
+    vec3 w = iPos.xyz + dir * position.x * dim.x + vec3(0.0, (position.y + 0.5) * dim.y, 0.0) + side * position.z * dim.z;
+    vN = dir * normal.x + vec3(0.0, normal.y, 0.0) + side * normal.z;
+    vW = w; vCol = iCol;
+    gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
   }`;
-const TOKEN_FRAG = /* glsl */ `
+const BUS_FRAG = /* glsl */ `
+  uniform vec3 uSun, uSunColor, uAmbient;
   uniform float uNight;
-  varying vec2 vP;
+  varying vec3 vL, vN, vW;
   varying vec4 vCol;
-  varying vec3 vShape;
-  float fill(float d) { float w = fwidth(d) * 0.75; return 1.0 - smoothstep(-w, w, d); }
   void main() {
-    float ca = cos(vShape.x), sa = sin(vShape.x);
-    vec2 p = vec2(ca * vP.x + sa * vP.y, -sa * vP.x + ca * vP.y);
-    float r = length(vP);
-    // Caret: a short chevron just beyond the ring, along +x.
-    vec2 q = vec2(p.x - 1.42, abs(p.y));
-    float caret = max(abs(q.x + q.y * 0.9) - 0.17, max(q.y - 0.55, -q.x - 0.62));
-    float body = r - 0.74, ring = r - 1.0;
-    vec3 cream = mix(vec3(0.99, 0.97, 0.92), vec3(0.86, 0.84, 0.9), uNight);
-    float shadow = (1.0 - smoothstep(0.7, 1.45, length(vP - vec2(0.12, -0.2)))) * 0.35;
-    vec4 col = vec4(0.1, 0.07, 0.05, shadow);
-    // Ripple while stopped: a ring that swells and fades.
-    if (vShape.z >= 0.0) {
-      float t = fract(vShape.z);
-      float rr = 1.0 + t * 1.5;
-      float a = (1.0 - smoothstep(0.0, 0.12, abs(r - rr))) * (1.0 - t) * 0.7;
-      col = mix(col, vec4(vCol.rgb, 1.0), a);
+    vec3 n = normalize(vN), c = vCol.rgb;
+    vec3 an = abs(vL) * 2.0; // 1 on the faces
+    bool roof = vL.y > 0.49, front = vL.x > 0.49, back = vL.x < -0.49, sideF = abs(vL.z) > 0.49;
+    vec3 glass = mix(vec3(0.16, 0.2, 0.26), vec3(1.0, 0.86, 0.6), uNight * 0.85);
+    if (roof) c = mix(c, vec3(0.97, 0.95, 0.9), 0.55);
+    if (sideF) {
+      float band = step(-0.02, vL.y) * step(vL.y, 0.32) * step(abs(vL.x), 0.44);
+      float pillar = step(0.86, fract((vL.x + 0.5) * 8.0));
+      c = mix(c, glass, band * (1.0 - pillar));
+      c = mix(c, vec3(0.96, 0.94, 0.88), step(-0.12, vL.y) * step(vL.y, -0.06) * 0.8); // belt line
+      if (vL.y < -0.4) c *= 0.45; // skirt
     }
-    float caretOut = fill(caret - 0.12), caretIn = fill(caret);
-    col = mix(col, vec4(cream, 1.0), max(fill(ring), caretOut));
-    col = mix(col, vec4(vCol.rgb, 1.0), max(fill(body), caretIn));
-    gl_FragColor = vec4(col.rgb, col.a * vCol.a);
-    if (gl_FragColor.a < 0.004) discard;
+    if (front) c = mix(c, glass, step(-0.12, vL.y) * step(abs(vL.z), 0.42));
+    if (back) c = mix(c, glass * 0.8, step(0.0, vL.y) * step(vL.y, 0.3) * step(abs(vL.z), 0.36));
+    float lambert = max(dot(n, uSun), 0.0);
+    // Buses carry their own light: the paint stays readable at night.
+    vec3 col = c * (0.62 + 0.38 * lambert) * mix(vec3(1.0), uSunColor, 0.25);
+    col = mix(col, col * vec3(0.78, 0.8, 0.9), uNight * 0.5);
+    // Head and tail lights.
+    float lamp = step(abs(abs(vL.z) - 0.32), 0.1) * step(abs(vL.y + 0.26), 0.1);
+    if (front) col += vec3(1.0, 0.95, 0.8) * lamp * (0.4 + uNight * 1.2);
+    if (back) col += vec3(1.0, 0.18, 0.12) * lamp * (0.3 + uNight * 0.9);
+    if (sideF) col += glass * 0.35 * uNight * step(-0.02, vL.y) * step(vL.y, 0.32);
+    gl_FragColor = vec4(col, vCol.a);
+    #include <colorspace_fragment>
+  }`;
+const PAD_VERT = /* glsl */ `
+  attribute vec4 iPos;   // ground position, length (m)
+  attribute vec4 iInfo;  // heading, ripple phase (<0 none), selected, alpha
+  varying vec2 vP; varying vec4 vInfo;
+  void main() {
+    float h = iInfo.x;
+    vec3 dir = vec3(cos(h), 0.0, -sin(h)), side = vec3(sin(h), 0.0, cos(h));
+    vP = position.xz * 2.0;
+    vec3 w = iPos.xyz + (dir * position.x + side * position.z) * iPos.w * 1.6;
+    vInfo = iInfo;
+    gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+  }`;
+const PAD_FRAG = /* glsl */ `
+  uniform float uTime, uNight;
+  varying vec2 vP; varying vec4 vInfo;
+  void main() {
+    float e = length(vP * vec2(1.0, 2.6));
+    float a = (1.0 - smoothstep(0.25, 0.75, e)) * 0.32 * (1.0 - uNight * 0.4);
+    vec3 col = vec3(0.1, 0.08, 0.1);
+    float r = length(vP);
+    if (vInfo.y >= 0.0) {
+      float t = fract(vInfo.y);
+      float ring = (1.0 - smoothstep(0.0, 0.05, abs(r - (0.3 + t * 0.65)))) * (1.0 - t);
+      col = mix(col, vec3(1.0, 0.97, 0.9), ring); a = max(a, ring * 0.6);
+    }
+    if (vInfo.z > 0.5) {
+      float ring = 1.0 - smoothstep(0.0, 0.035, abs(r - 0.82 - 0.03 * sin(uTime * 4.0)));
+      col = mix(col, vec3(1.0), ring); a = max(a, ring * 0.95);
+    }
+    gl_FragColor = vec4(col, a * vInfo.w);
     #include <colorspace_fragment>
   }`;
 
@@ -147,53 +176,54 @@ export function createBuses(scene, transit, world, tagLayer) {
   let feedTs = 0;
   let mode = 'lateness';
 
-  const quad = new THREE.PlaneGeometry(1, 1);
-  const tokGeo = new THREE.InstancedBufferGeometry();
-  tokGeo.index = quad.index;
-  tokGeo.setAttribute('position', quad.getAttribute('position'));
-  const iPos = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  const busGeo = new THREE.InstancedBufferGeometry();
+  busGeo.index = box.index;
+  busGeo.setAttribute('position', box.getAttribute('position'));
+  busGeo.setAttribute('normal', box.getAttribute('normal'));
+  busGeo.instanceCount = 0;
+  const iPos = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
   const iCol = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
-  const iShape = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3).setUsage(THREE.DynamicDrawUsage);
-  tokGeo.setAttribute('iPos', iPos);
-  tokGeo.setAttribute('iCol', iCol);
-  tokGeo.setAttribute('iShape', iShape);
-  tokGeo.instanceCount = 0;
-  const uView = { value: new THREE.Vector2(innerWidth, innerHeight) };
-  const tokens = new THREE.Mesh(
-    tokGeo,
-    new THREE.ShaderMaterial({
-      uniforms: { uView, uNight: shared.uNight },
-      vertexShader: TOKEN_VERT,
-      fragmentShader: TOKEN_FRAG,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    }),
-  );
-  tokens.frustumCulled = false;
-  tokens.renderOrder = 30;
+  const iHead = new THREE.InstancedBufferAttribute(new Float32Array(MAX), 1).setUsage(THREE.DynamicDrawUsage);
+  busGeo.setAttribute('iPos', iPos);
+  busGeo.setAttribute('iCol', iCol);
+  busGeo.setAttribute('iHead', iHead);
+  const busMat = new THREE.ShaderMaterial({
+    uniforms: { uSun: shared.uSun, uSunColor: shared.uSunColor, uAmbient: shared.uAmbient, uNight: shared.uNight },
+    vertexShader: BUS_VERT,
+    fragmentShader: BUS_FRAG,
+    transparent: true,
+    // Buses are the point of the map: always drawn, never lost behind a
+    // hill or a tower. Each box still shades itself correctly.
+    depthTest: false,
+    depthWrite: false,
+  });
+  const models = new THREE.Mesh(busGeo, busMat);
+  models.frustumCulled = false;
+  models.renderOrder = 30;
 
-  // Trails: one tapered ribbon per bus, rebuilt every frame.
-  const tPos = new Float32Array(MAX * TRAIL_PTS * 2 * 3);
-  const tCol = new Float32Array(MAX * TRAIL_PTS * 2 * 4);
-  const tIdx = [];
-  for (let b = 0; b < MAX; b++) {
-    for (let i = 0; i < TRAIL_PTS - 1; i++) {
-      const a = (b * TRAIL_PTS + i) * 2;
-      tIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-    }
-  }
-  const tGeo = new THREE.BufferGeometry();
-  tGeo.setAttribute('position', new THREE.BufferAttribute(tPos, 3).setUsage(THREE.DynamicDrawUsage));
-  tGeo.setAttribute('color', new THREE.BufferAttribute(tCol, 4).setUsage(THREE.DynamicDrawUsage));
-  tGeo.setIndex(tIdx);
-  const trail = new THREE.Mesh(
-    tGeo,
-    new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
-  );
-  trail.frustumCulled = false;
-  trail.renderOrder = 17;
-  scene.add(trail, tokens);
+  const quad = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  const padGeo = new THREE.InstancedBufferGeometry();
+  padGeo.index = quad.index;
+  padGeo.setAttribute('position', quad.getAttribute('position'));
+  const pPos = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+  const pInfo = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+  padGeo.setAttribute('iPos', pPos);
+  padGeo.setAttribute('iInfo', pInfo);
+  padGeo.instanceCount = 0;
+  const pads = new THREE.Mesh(padGeo, new THREE.ShaderMaterial({
+    uniforms: { uTime: shared.uTime, uNight: shared.uNight },
+    vertexShader: PAD_VERT,
+    fragmentShader: PAD_FRAG,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }));
+  pads.frustumCulled = false;
+  pads.renderOrder = 17;
+  scene.add(pads, models);
+  let selectedBus = null;
 
   // Route-number tags, shown when close enough to read them.
   const tags = [];
@@ -284,16 +314,13 @@ export function createBuses(scene, transit, world, tagLayer) {
 
   function update(dt, mpp, camera, dist) {
     const now = Date.now() / 1000;
-    // Token radius in pixels: small dots over the whole city, room for the
-    // route number once close in.
-    const radius = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 3000, 6, 12), 5.5, 12.5);
-    const len = radius * 2.2 * mpp; // trail scale, in metres
+    // Smallest on-screen length of a bus, in pixels; life-size wins up close.
+    const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 1500, 18, 32), 18, 32);
     haze.copy(shared.uHaze.value);
     list.length = 0;
     let i = 0, tagN = 0;
-    const showTags = radius > 10.5;
+    const showTags = dist < 3200;
     const W = innerWidth, H = innerHeight;
-    uView.value.set(W, H);
     const tNow = performance.now() / 1000;
     for (const [id, b] of buses) {
       b.alpha += ((b.dying ? 0 : 1) - b.alpha) * (1 - Math.exp(-dt * 2));
@@ -324,40 +351,15 @@ export function createBuses(scene, transit, world, tagLayer) {
       const vis = b.alpha * (1 - fade);
       if (vis < 0.03 || i >= MAX) continue;
       const gy = world.surfaceY(b.x, b.y);
-      const sz = len * (0.5 + 0.5 * vis);
       colorFor(b, col).lerp(haze, fade * 0.8);
-      // Screen-space heading: project a point a little way along the road.
-      v3.set(b.x, gy, -b.y).project(camera);
-      v4.set(b.x + Math.cos(b.heading) * 20, gy, -b.y - Math.sin(b.heading) * 20).project(camera);
-      iPos.setXYZ(i, b.x, gy + 2, -b.y);
-      iCol.setXYZW(i, col.r, col.g, col.b, vis);
+      const L = Math.max(12, px * mpp) * (0.6 + 0.4 * vis);
       const stopped = b.status === 1 || (b.speed === 0 && b.v < 0.5);
-      iShape.setXYZ(i, Math.atan2((v4.y - v3.y) * H, (v4.x - v3.x) * W), radius * (0.6 + 0.4 * vis), stopped ? tNow / 2.2 + (b.id.length % 7) * 0.13 : -1);
-
-      // Trail: back along the shape, tapering and fading.
-      const base = i * TRAIL_PTS * 2;
-      const tl = Math.min(900, Math.max(60, sz * 5)) * Math.min(1, 0.3 + b.v / 6);
-      const halfW = sz * 0.22;
-      for (let k = 0; k < TRAIL_PTS; k++) {
-        const f = k / (TRAIL_PTS - 1);
-        let x = b.x, y = b.y, nx = 0, ny = 0;
-        if (onShape) {
-          pointAt(b.shape, Math.max(0, b.s - sz * 0.3 - f * tl), tp);
-          x = tp.x; y = tp.y;
-          const l = Math.hypot(tp.hx, tp.hy) || 1;
-          nx = -tp.hy / l; ny = tp.hx / l;
-        }
-        const w = halfW * (1 - f * 0.85);
-        const z = world.surfaceY(x, y) + 1.5;
-        const a = onShape ? (1 - f) ** 1.6 * 0.75 * vis : 0;
-        for (let side = 0; side < 2; side++) {
-          const sgn = side ? 1 : -1, o = (base + k * 2 + side);
-          tPos[o * 3] = x + nx * w * sgn;
-          tPos[o * 3 + 1] = z;
-          tPos[o * 3 + 2] = -(y + ny * w * sgn);
-          tCol[o * 4] = col.r; tCol[o * 4 + 1] = col.g; tCol[o * 4 + 2] = col.b; tCol[o * 4 + 3] = a;
-        }
-      }
+      iPos.setXYZW(i, b.x, gy + 3 + L * 0.05, -b.y, L); // the drawn terrain sits a little above the sampled height
+      iCol.setXYZW(i, col.r, col.g, col.b, vis);
+      iHead.setX(i, b.heading);
+      pPos.setXYZW(i, b.x, gy + 0.6, -b.y, L);
+      pInfo.setXYZW(i, b.heading, stopped ? tNow / 2.4 + (b.id.length % 7) * 0.13 : -1, b === selectedBus ? 1 : 0, vis);
+      v3.set(b.x, gy + L * 0.45, -b.y).project(camera);
 
       b.screen = new THREE.Vector3(b.x, gy, -b.y);
       if (showTags && tagN < 120) {
@@ -365,8 +367,10 @@ export function createBuses(scene, transit, world, tagLayer) {
           const t = tagFor(tagN++);
           const text = routes[b.route]?.short ?? '';
           if (t.text !== text) { t.el.textContent = text; t.text = text; }
-          t.el.style.transform = `translate(${((v3.x + 1) / 2) * W}px, ${((1 - v3.y) / 2) * H}px) translate(-50%, -50%)`;
-          t.el.style.opacity = vis * THREE.MathUtils.smoothstep(radius, 10.5, 12);
+          t.el.style.transform = `translate(${((v3.x + 1) / 2) * W}px, ${((1 - v3.y) / 2) * H}px) translate(-50%, -100%)`;
+          t.el.style.opacity = vis * (1 - THREE.MathUtils.smoothstep(dist, 2400, 3200));
+          const bg = routes[b.route]?.color || '#7d8a99';
+          if (t.color !== bg) { t.el.style.background = bg; t.color = bg; }
           t.shown = true;
         }
       }
@@ -374,12 +378,8 @@ export function createBuses(scene, transit, world, tagLayer) {
       i++;
     }
     for (let k = tagN; k < tags.length; k++) if (tags[k].shown) { tags[k].el.style.opacity = 0; tags[k].shown = false; }
-    // Clear trails of unused slots.
-    tCol.fill(0, i * TRAIL_PTS * 2 * 4);
-    tokGeo.instanceCount = i;
-    iPos.needsUpdate = iCol.needsUpdate = iShape.needsUpdate = true;
-    tGeo.setDrawRange(0, i * (TRAIL_PTS - 1) * 6);
-    tGeo.attributes.position.needsUpdate = tGeo.attributes.color.needsUpdate = true;
+    busGeo.instanceCount = padGeo.instanceCount = i;
+    iPos.needsUpdate = iCol.needsUpdate = iHead.needsUpdate = pPos.needsUpdate = pInfo.needsUpdate = true;
   }
 
   return {
@@ -387,6 +387,7 @@ export function createBuses(scene, transit, world, tagLayer) {
     list,
     routes,
     setMode: (m) => (mode = m),
+    setSelected: (b) => (selectedBus = b),
     get mode() { return mode; },
     delayOf: (b) => delays[b.tripId],
     get feedTs() { return feedTs; },

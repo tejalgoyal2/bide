@@ -5,6 +5,11 @@ import * as THREE from 'three';
 import earcut from 'earcut';
 import { shared, EXAG } from './world.js';
 import { HAZE_GLSL, NOISE_GLSL } from './shaders.js';
+import { toXY } from '../../shared/geo.js';
+
+// Two buildings get their own night: the Legislature's outline of bulbs, and
+// BCI, whose lights stay on late.
+const LEG = toXY(-123.3703, 48.4197), BCI = toXY(-123.36308, 48.42823);
 
 const SHOW_FROM = 7000, FULL_AT = 3000; // camera distance, metres
 
@@ -17,21 +22,23 @@ export function createBuildings(scene, world) {
       attribute float aSeed;
       uniform float uGrow, uRise;
       varying vec3 vN, vWorld;
-      varying float vSeed, vU, vZ, vTop, vG;
+      varying float vSeed, vU, vZ, vTop, vG, vFlag;
       void main() {
+        float seed = fract(aSeed);
+        vFlag = floor(aSeed);
         // Each building grows on its own beat: a wave, not a single lift.
-        float g = clamp(uGrow * 1.7 - aSeed * 0.7, 0.0, 1.0);
+        float g = clamp(uGrow * 1.7 - seed * 0.7, 0.0, 1.0);
         g = 1.0 - pow(1.0 - g, 3.0);
         float y = aMeta.x * uRise + aMeta.z * aMeta.y * g - (1.0 - aMeta.z) * 2.0;
         if (g < 0.01) y = aMeta.x * uRise - 6.0; // hidden under the ground
         vec4 w = modelMatrix * vec4(position.x, y, position.z, 1.0);
-        vWorld = w.xyz; vN = normal; vSeed = aSeed; vU = aMeta.w;
+        vWorld = w.xyz; vN = normal; vSeed = seed; vU = aMeta.w;
         vZ = aMeta.z * aMeta.y * g; vTop = aMeta.y * g; vG = g;
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader: /* glsl */ `
       varying vec3 vN, vWorld;
-      varying float vSeed, vU, vZ, vTop, vG;
+      varying float vSeed, vU, vZ, vTop, vG, vFlag;
       ${NOISE_GLSL}
       ${HAZE_GLSL}
       void main() {
@@ -49,10 +56,17 @@ export function createBuildings(scene, world) {
           vec2 id = floor(cell), f = fract(cell);
           float win = step(0.28, f.x) * step(f.x, 0.72) * step(0.3, f.y) * step(f.y, 0.78);
           win *= step(1.0, vTop - id.y * 3.3) * step(0.5, id.y + 0.6); // whole floors only
-          float on = step(0.62, hash(id + vSeed * 97.0 + floor(uTime / 40.0 + vSeed * 9.0) * 0.013));
+          float on = step(vFlag > 1.5 ? 0.08 : 0.62, hash(id + vSeed * 97.0 + floor(uTime / 40.0 + vSeed * 9.0) * 0.013));
           float near = smoothstep(2600.0, 1100.0, distance(vWorld, uCamPos));
           vec3 warm = mix(vec3(1.0, 0.76, 0.42), vec3(0.95, 0.9, 0.8), hash(id * 1.7 + vSeed));
           col += warm * uNight * (win * on * near * 0.95 + (1.0 - near) * 0.06);
+        }
+        // The Legislature: rows of bulbs along its eaves and cornices.
+        if (vFlag > 0.5 && vFlag < 1.5 && uNight > 0.01) {
+          vec2 q = vec2(roof ? vWorld.x + vWorld.z : vU, vZ);
+          float row = roof ? 0.0 : (1.0 - smoothstep(0.0, 0.35, abs(vZ - vTop + 0.3))) + (1.0 - smoothstep(0.0, 0.35, abs(vZ - 0.45 * vTop)));
+          float bulb = 1.0 - smoothstep(0.12, 0.3, length(vec2(fract(q.x / 1.1) - 0.5, 0.0)));
+          col += vec3(1.0, 0.86, 0.55) * uNight * row * bulb * 1.6;
         }
         gl_FragColor = vec4(applyHaze(col, vWorld), 1.0);
         #include <colorspace_fragment>
@@ -100,7 +114,9 @@ export function createBuildings(scene, world) {
         }
         // Buildings near the centre of downtown rise first.
         const r = Math.hypot(cx / n + 700, cy / n + 3900);
-        const s = Math.min(0.999, (r / 9000) * 0.75 + Math.random() * 0.25);
+        const ccx = cx / n, ccy = cy / n;
+        const flag = Math.hypot(ccx - LEG[0], ccy - LEG[1]) < 80 ? 1 : Math.hypot(ccx - BCI[0], ccy - BCI[1]) < 35 ? 2 : 0;
+        const s = flag + Math.min(0.999, (r / 9000) * 0.75 + Math.random() * 0.25);
         let u = 0;
         for (let j = 0; j < n; j++) {
           const ax = xs[j * 2], ay = xs[j * 2 + 1], bx = xs[((j + 1) % n) * 2], by = xs[((j + 1) % n) * 2 + 1];

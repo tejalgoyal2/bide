@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "deploy": "npm run build && wrangler deploy",
-    "bake": "node scripts/bake-gtfs.mjs && node scripts/bake-map.mjs && node scripts/bake-buildings.mjs"
+    "bake": "node scripts/bake-gtfs.mjs && node scripts/bake-map.mjs && node scripts/bake-buildings.mjs && node scripts/bake-streets.mjs"
   },
   "devDependencies": {
     "@mapbox/vector-tile": "^3.0.0",
