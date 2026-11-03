@@ -554,4 +554,4 @@ renderer.setAnimationLoop(frame);
 // ?at=8.5 opens the map at 8:30 am instead of now; handy for sharing a moment.
 const at = new URLSearchParams(location.search).get('at');
 if (at != null && !Number.isNaN(+at)) setHour(+at);
-window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame, select };
+window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame, select, eggs };
