@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { feedTimestamp, decodeTripUpdates, decodeVehicles, decodeAlerts } from '../shared/gtfsrt.js';
 import { BOUNDS } from '../shared/geo.js';
-import { bideAt, plusAt } from '../shared/model.js';
+import { bideAt, plusAt, blendParams } from '../shared/model.js';
 
 const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
@@ -49,43 +49,17 @@ function compactTrips(feed) {
 let paramsCache = null;
 async function latestParams(env) {
   if (paramsCache && Date.now() - paramsCache.at < 600_000) return paramsCache.p;
-  const row = await env.DB.prepare('SELECT date, summary FROM days ORDER BY date DESC LIMIT 1').first();
-  let p = { rho: 0.95, gamma: 0.5, beta: 0, c: 0, date: null, best: 'bidePlus' };
-  if (row) {
-    const s = JSON.parse(row.summary);
-    const best = ['bide', 'bidePlus'].sort((a, b) => s.overall[a].mae - s.overall[b].mae)[0];
-    p = { ...p, ...s.params.fitted, date: row.date, best, mae: { official: s.overall.official.mae, [best]: s.overall[best].mae } };
+  const { results } = await env.DB.prepare('SELECT date, summary FROM days ORDER BY date DESC LIMIT 8').all();
+  const days = results.map((r) => ({ date: r.date, ...JSON.parse(r.summary) }));
+  // The same settings the scoreboard will use for today.
+  const p = { ...blendParams(days, { rho: 0.95, gamma: 0.5, beta: 0, c: 0 }), date: days[0]?.date ?? null, best: 'bidePlus' };
+  if (days[0]) {
+    const o = days[0].overall;
+    p.best = ['bide', 'bidePlus'].sort((a, b) => o[a].mae - o[b].mae)[0];
+    p.mae = { official: o.official.mae, [p.best]: o[p.best].mae };
   }
   paramsCache = { at: Date.now(), p };
   return p;
-}
-
-const NEWS_FEEDS = [
-  ['CHEK', 'https://www.cheknews.ca/feed/'],
-  ['Times Colonist', 'https://www.timescolonist.com/rss/local-news'],
-  ['Victoria News', 'https://www.vicnews.com/feed/'],
-  ['Victoria Buzz', 'https://victoriabuzz.com/feed/'],
-];
-const unescape = (t) => t
-  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-  .replace(/<[^>]+>/g, ' ')
-  .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
-  .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
-  .replace(/&quot;/g, '"').replace(/&apos;|&rsquo;|&lsquo;/g, "'").replace(/&ldquo;|&rdquo;/g, '"')
-  .replace(/&ndash;|&mdash;/g, '–').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-  .replace(/\s+/g, ' ').trim();
-async function readFeed([source, feed]) {
-  const res = await fetch(feed, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; bide; +https://bide.itejalgoyal.workers.dev)' }, signal: AbortSignal.timeout(6000), cf: { cacheTtl: 600 } });
-  if (!res.ok) throw new Error(res.status);
-  const xml = await res.text();
-  const tag = (item, t) => (item.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1] || '';
-  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 15).map(([, item]) => ({
-    source,
-    title: unescape(tag(item, 'title')).slice(0, 200),
-    link: unescape(tag(item, 'link')),
-    at: Date.parse(tag(item, 'pubDate')) || 0,
-    text: unescape(tag(item, 'description')).slice(0, 280),
-  })).filter((i) => /^https:\/\//.test(i.link));
 }
 
 export class Recorder extends DurableObject {
@@ -185,8 +159,18 @@ export class Recorder extends DurableObject {
   ingest(ts, trips) {
     const byTrip = new Map();
     for (const t of trips) {
+      // Late at night the feed also carries tomorrow's run of the same trip
+      // id: today's run (the earlier start date) wins until it's done.
+      const prev = byTrip.get(t.tripId);
+      if (prev && prev.startDate && t.startDate && prev.startDate < t.startDate) continue;
       let sm = this.sched.get(t.tripId);
-      if (!sm) this.sched.set(t.tripId, (sm = new Map()));
+      if (!sm || (t.startDate && sm.startDate && t.startDate !== sm.startDate && !(t.startDate < sm.startDate))) {
+        // A new day's run replaces the old timetable only once the old run has gone quiet.
+        const o = this.track.get(t.tripId);
+        if (sm && o && Date.now() / 1000 - o.t < 1800) continue;
+        this.sched.set(t.tripId, (sm = new Map()));
+      }
+      if (t.startDate) sm.startDate = t.startDate;
       for (let i = 0; i < t.stops.length; i += 3) sm.set(t.stops[i], t.stops[i + 1] - t.stops[i + 2]);
       byTrip.set(t.tripId, t);
     }
@@ -200,11 +184,11 @@ export class Recorder extends DurableObject {
     const since = Math.floor(Date.now() / 1000) - 1800;
     for (const r of this.sql.exec('SELECT ts, z FROM tu WHERE ts > ? ORDER BY ts', since).toArray()) {
       const feed = JSON.parse(new TextDecoder().decode(await gunzip(new Uint8Array(r.z))));
-      this.ingest(r.ts, feed.map(([tripId, , , , , d]) => {
+      this.ingest(r.ts, feed.map(([tripId, , startDate, , , d]) => {
         const stops = [];
         let q = 0, t = 0, dl = 0;
         for (let i = 0; i < d.length; i += 3) { q += d[i]; t += d[i + 1]; dl += d[i + 2]; stops.push(q, t, dl); }
-        return { tripId, stops, ids: [] };
+        return { tripId, startDate, stops, ids: [] };
       }));
     }
     this.tu = null; // the next live poll brings stop ids too
@@ -223,7 +207,8 @@ export class Recorder extends DurableObject {
     }
     if (d.length < 10) return 0;
     d.sort((a, b) => a - b);
-    return Math.round(d[d.length >> 1] / 3600) * 3600;
+    const h = Math.round(d[d.length >> 1] / 3600);
+    return Math.abs(h) === 1 ? h * 3600 : 0; // a clock change, never anything else
   }
 
   // The next few stops of one trip: BC Transit's prediction beside bide's and

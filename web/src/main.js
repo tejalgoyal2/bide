@@ -231,22 +231,35 @@ const mmss = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min 
 const dayName = (d) => new Date(d + 'T12:00:00').toLocaleDateString('en-CA', { weekday: 'short', month: 'short', day: 'numeric' });
 
 // Mean error by lead time, one line per predictor.
-function chart(buckets) {
-  const W = 500, H = 150, L = 34, B = 22, T = 8;
-  const series = [['official', '#a59c90'], ['bide', '#4f86c6'], ['bidePlus', '#e0774f']];
-  const max = Math.max(...buckets.flatMap((b) => series.map(([k]) => b[k]?.mae || 0))) * 1.08;
-  const x = (i) => L + ((W - L - 8) * (i + 0.5)) / buckets.length;
-  const y = (v) => T + (H - T - B) * (1 - v / max);
-  const grid = [0, 60, 120, 180, 240, 300, 360].filter((v) => v < max)
-    .map((v) => `<line x1="${L}" x2="${W - 4}" y1="${y(v)}" y2="${y(v)}" stroke="currentColor" stroke-opacity=".08"/><text x="${L - 6}" y="${y(v) + 3}" text-anchor="end">${v / 60}m</text>`).join('');
-  const lines = series.map(([k, c]) => {
-    const pts = buckets.map((b, i) => `${x(i)},${y(b[k]?.mae || 0)}`).join(' ');
-    return `<polyline points="${pts}" fill="none" stroke="${c}" stroke-width="2.2" stroke-linejoin="round"/>` +
-      buckets.map((b, i) => `<circle cx="${x(i)}" cy="${y(b[k]?.mae || 0)}" r="2.6" fill="${c}"/>`).join('');
+// The scoreboard. One question per row: for predictions made this far
+// ahead, how far off was BC Transit, and how far off was bide? Lower is
+// better; each row says who was closer and by how much.
+const short = (s) => (s >= 3600 ? `${Math.round(s / 3600)} h` : s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
+function chart(buckets, k) {
+  const W = 560, rowH = 34, L = 112, R = 148, T = 22;
+  const H = T + rowH * buckets.length + 18;
+  const vals = buckets.flatMap((b) => [b.official.mae, b[k].mae]);
+  // Never let one wild value flatten the rest: the axis stops at twice BC Transit's worst.
+  const cap = Math.max(...buckets.map((b) => b.official.mae)) * 2;
+  const max = Math.min(cap, Math.max(...vals)) * 1.06;
+  const x = (v) => L + (W - L - R) * Math.min(1, v / max);
+  const ticks = [0, 60, 120, 180, 240, 300, 360, 480, 600].filter((v) => v <= max).filter((v, i, a) => a.length < 6 || i % 2 === 0);
+  const grid = ticks.map((v) => `<line x1="${x(v)}" x2="${x(v)}" y1="${T - 6}" y2="${H - 18}" class="g"/><text x="${x(v)}" y="${H - 4}" text-anchor="middle">${v / 60} min</text>`).join('');
+  const rows = buckets.map((b, i) => {
+    const y = T + rowH * i + rowH / 2, o = b.official.mae, m = b[k].mae, gap = o - m;
+    const win = Math.abs(gap) < Math.max(3, o * 0.02) ? 'tie' : gap > 0 ? 'bide' : 'bct';
+    const verdict = win === 'tie' ? 'level' : `${win === 'bide' ? 'bide' : 'BC Transit'} closer by ${short(Math.abs(gap))}`;
+    const off = m > max ? ' ›' : '';
+    return `<g class="row ${win}">
+      <text x="0" y="${y + 4}" class="lbl">${b.lo}–${b.hi} min ahead</text>
+      <line x1="${x(Math.min(o, m))}" x2="${x(Math.max(o, m))}" y1="${y}" y2="${y}" class="bar"/>
+      <circle cx="${x(o)}" cy="${y}" r="5.5" class="bct"/><circle cx="${x(m)}" cy="${y}" r="5.5" class="us"/>
+      <text x="${W - R + 10}" y="${y + 4}" class="verdict">${verdict}${off}</text>
+    </g>`;
   }).join('');
-  const labels = buckets.map((b, i) => `<text x="${x(i)}" y="${H - 6}" text-anchor="middle">${b.lo}–${b.hi} min</text>`).join('');
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}">${grid}${lines}${labels}</svg>
-    <div class="key"><span><i style="background:#a59c90"></i>BC Transit</span><span><i style="background:#4f86c6"></i>bide</span><span><i style="background:#e0774f"></i>bide+</span></div>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Average miss by lead time">
+      <text x="${L}" y="10" class="cap">Average miss · lower is better</text>${grid}${rows}</svg>
+    <div class="key"><span><i class="bct"></i>BC Transit's own prediction</span><span><i class="us"></i>${k === 'bide' ? 'bide' : 'bide+'}</span></div>`;
 }
 
 async function loadScores() {
@@ -254,35 +267,41 @@ async function loadScores() {
     const days = await (await fetch('/api/scores')).json();
     if (!days.length) return;
     const d = days[0];
-    const o = d.overall, far = d.buckets[d.buckets.length - 1];
+    const o = d.overall;
     const partial = d.partialFrom
-      ? ` (partial: recording began ${new Date(d.partialFrom * 1000).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })})`
+      ? ` (from ${new Date(d.partialFrom * 1000).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })})`
       : '';
-    // Only call it ahead when it is clearly ahead, by at least 1%.
-    const best = ['bide', 'bidePlus'].filter((k) => o[k].mae < o.official.mae * 0.99).sort((a, b) => o[a].mae - o[b].mae)[0];
+    // Show whichever of bide's two models did better that day; call it
+    // ahead only when it is clearly ahead, by at least 1%.
     const label = { bide: 'bide', bidePlus: 'bide+' };
-    const rows = d.buckets.map((b) => {
-      const vals = ['official', 'bide', 'bidePlus'].map((k) => b[k]?.mae ?? null);
-      const min = Math.min(...vals.filter((v) => v != null));
-      return `<tr><td>${b.lo}–${b.hi} min</td><td>${b.official.n.toLocaleString()}</td>${vals.map((v) => `<td class="${v === min ? 'win' : ''}">${mmss(v)}</td>`).join('')}</tr>`;
+    const k = ['bide', 'bidePlus'].sort((a, b) => o[a].mae - o[b].mae)[0];
+    const ahead = o[k].mae < o.official.mae * 0.99, behind = o[k].mae > o.official.mae * 1.01;
+    const stat = (name, v, cls) => `<div class="stat-big ${cls}"><span>${name}</span><b>${mmss(v.mae)}</b><small>average miss · within a minute ${Math.round(v.within60)}% of the time</small></div>`;
+    const history = days.slice(0, 7).map((x) => {
+      const kk = ['bide', 'bidePlus'].sort((a, b) => x.overall[a].mae - x.overall[b].mae)[0];
+      const w = x.overall[kk].mae < x.overall.official.mae * 0.99;
+      return `<li><span>${dayName(x.date)}</span><span>BC Transit ${short(x.overall.official.mae)}</span><span class="${w ? 'won' : ''}">${label[kk]} ${short(x.overall[kk].mae)}</span></li>`;
     }).join('');
     $('score-body').innerHTML = `
-      <p class="headline">${dayName(d.date)}${partial}: BC Transit's predictions missed by <em>${mmss(o.official.mae)}</em> on average,
-        and were within a minute ${o.official.within60}% of the time.
-        ${best ? `${label[best]} missed by <em>${mmss(o[best].mae)}</em>, within a minute ${o[best].within60}% of the time.` : `bide+ ${mmss(o.bidePlus.mae)}, bide ${mmss(o.bide.mae)}: not ahead yet.`}</p>
+      <p class="headline">${dayName(d.date)}${partial}: ${ahead
+        ? `${label[k]} beat BC Transit's own arrival times, missing by <em>${mmss(o[k].mae)}</em> on average against ${mmss(o.official.mae)}.`
+        : behind
+          ? `BC Transit's own arrival times were closer, missing by <em>${mmss(o.official.mae)}</em> on average; ${label[k]} missed by ${mmss(o[k].mae)}.`
+          : `${label[k]} and BC Transit finished level, both missing by about <em>${mmss(o.official.mae)}</em> on average.`}</p>
+      <div class="stat-pair">${stat('BC Transit', o.official, 'bct')}${stat(label[k], o[k], 'us')}</div>
       ${d.feedClockOffset > 0.5
-        ? `<p>BC Transit's feed ran on the wrong clock this day: every prediction and timetable time was a whole hour off, with no delays reported. bide noticed from where the buses actually were and corrected for it.</p>`
-        : `<p>Predictions run ${far.official.bias < 0 ? 'optimistic' : 'cautious'}: made 20–30 minutes out, buses arrived <b>${mmss(Math.abs(far.official.bias))}</b> ${far.official.bias < 0 ? 'later' : 'earlier'} than predicted on average.</p>`}
-      ${chart(d.buckets)}
-      <table class="score-table">
-        <tr><th>Made</th><th>Checks</th><th>BC Transit</th><th>bide</th><th>bide+</th></tr>${rows}
-      </table>
-      <p class="muted small">${d.events.toLocaleString()} prediction checks on ${d.trips} trips and ${d.arrivals.toLocaleString()} observed arrivals.
-        ${days.length} day${days.length > 1 ? 's' : ''} scored so far; a new day is added every morning.</p>`;
+        ? `<p class="note">BC Transit's feed ran on the wrong clock that day, an hour out with no delays reported. bide spotted it from where the buses actually were and corrected for it.</p>`
+        : d.feedClockOffset > 0.01 && o.officialFixed
+          ? `<p class="note">For ${Math.max(1, Math.round(d.feedClockOffset * 100))}% of the day's updates BC Transit's feed was an hour out, which inflates its average. With its clock put right it would have missed by ${mmss(o.officialFixed.mae)}; ${label[k]} was ${o[k].mae < o.officialFixed.mae * 0.99 ? 'still closer' : o[k].mae > o.officialFixed.mae * 1.01 ? 'then behind' : 'then level'}.</p>`
+          : ''}
+      ${chart(d.buckets, k)}
+      <h3 class="score-h">Every day so far</h3>
+      <ul class="days">${history}</ul>
+      <p class="muted small">${d.events.toLocaleString()} predictions checked against ${d.arrivals.toLocaleString()} real arrivals on ${d.trips.toLocaleString()} trips. A new day is scored every morning.</p>`;
     $('score-method').textContent = d.method;
-    $('s-recorded').textContent = best
-      ? `${dayName(d.date)}: ${label[best]} ${mmss(o[best].mae)} vs BC Transit ${mmss(o.official.mae)}`
-      : `${dayName(d.date)}: BC Transit off by ${mmss(o.official.mae)} on average`;
+    $('s-recorded').textContent = ahead
+      ? `${dayName(d.date)}: ${label[k]} ${short(o[k].mae)} vs BC Transit ${short(o.official.mae)}`
+      : `${dayName(d.date)}: BC Transit ${short(o.official.mae)}, ${label[k]} ${short(o[k].mae)}`;
   } catch (e) {
     console.warn('scores', e);
   }

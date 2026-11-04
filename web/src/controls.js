@@ -23,7 +23,10 @@ export function createControls(camera, dom, groundY) {
   const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const ndc = new THREE.Vector2();
   const pointers = new Map();
-  let mode = null, anchor = null, moved = 0, last = null, lastT = 0, twoStart = null;
+  let mode = null, anchor = null, moved = 0, last = null, lastT = 0, twoStart = null, touch = false;
+  // Fingers are less precise than a mouse: on touch, gestures need a clear
+  // intent before they turn or tilt, and everything moves a little less.
+  let twoTurn = false, twoTilt = false;
 
   const groundAt = (x, y) => {
     const r = dom.getBoundingClientRect();
@@ -57,13 +60,16 @@ export function createControls(camera, dom, groundY) {
   dom.addEventListener('pointerdown', (e) => {
     interrupt();
     dom.setPointerCapture(e.pointerId);
+    touch = e.pointerType === 'touch';
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     moved = 0;
     s.vel.set(0, 0, 0);
     s.spin = 0;
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      twoStart = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x), my: (a.y + b.y) / 2 };
+      twoStart = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x), my: (a.y + b.y) / 2, ang0: Math.atan2(b.y - a.y, b.x - a.x), my0: (a.y + b.y) / 2 };
+      twoTurn = twoTilt = false;
+      s.vel.set(0, 0, 0);
       mode = 'two';
       return;
     }
@@ -83,10 +89,16 @@ export function createControls(camera, dom, groundY) {
     if (mode === 'two' && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y), ang = Math.atan2(b.y - a.y, b.x - a.x), my = (a.y + b.y) / 2;
-      s.dist *= twoStart.d / d;
-      s.azimuth -= ang - twoStart.ang;
-      s.polar -= (my - twoStart.my) * 0.004;
-      twoStart = { d, ang, my };
+      const wrap = (x) => Math.atan2(Math.sin(x), Math.cos(x));
+      // Zoom always follows the pinch, a little softened.
+      s.dist *= (twoStart.d / d) ** (touch ? 0.85 : 1);
+      // Twist turns the map only once it's clearly a twist (about 12 degrees),
+      // and both fingers sliding together tilt it only past 40 px.
+      if (!twoTurn && Math.abs(wrap(ang - twoStart.ang0)) > 0.21) twoTurn = true;
+      if (!twoTilt && Math.abs(my - twoStart.my0) > 40 && Math.abs(Math.log(d / twoStart.d)) < 0.05) twoTilt = true;
+      if (twoTurn) s.azimuth -= wrap(ang - twoStart.ang) * (touch ? 0.7 : 1);
+      if (twoTilt) s.polar -= (my - twoStart.my) * (touch ? 0.0025 : 0.004);
+      twoStart = { ...twoStart, d, ang, my };
       return;
     }
     if (mode === 'turn') {
@@ -112,8 +124,10 @@ export function createControls(camera, dom, groundY) {
   const up = (e) => {
     if (!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
-    if (moved < 6 && mode === 'pan' && s.onTap) s.onTap(e.clientX, e.clientY);
-    if (performance.now() - lastT > 80) s.vel.set(0, 0, 0);
+    if (moved < (touch ? 12 : 6) && mode === 'pan' && s.onTap) s.onTap(e.clientX, e.clientY);
+    if (performance.now() - lastT > 80 || mode === 'two') s.vel.set(0, 0, 0);
+    // A flick carries on, but a finger's flick only so far.
+    if (touch) s.vel.multiplyScalar(0.55).clampLength(0, s.dist * 1.2);
     if (pointers.size === 1) {
       const [p] = [...pointers.values()];
       mode = 'pan';
@@ -167,7 +181,7 @@ export function createControls(camera, dom, groundY) {
       s.target.z += (followPos.z - s.target.z) * (1 - Math.exp(-dt * 4));
     } else if (mode !== 'pan') {
       s.target.addScaledVector(s.vel, dt);
-      s.vel.multiplyScalar(Math.exp(-dt * 3.2));
+      s.vel.multiplyScalar(Math.exp(-dt * (touch ? 4.5 : 3.2)));
       if (mode !== 'turn') {
         s.azimuth += s.spin;
         s.spin *= Math.exp(-dt * 4);

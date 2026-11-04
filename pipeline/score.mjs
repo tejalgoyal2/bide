@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { decodeVehicles } from '../shared/gtfsrt.js';
-import { bideAt, featuresAt, plusAt, LEAD_BANDS, band } from '../shared/model.js';
+import { bideAt, featuresAt, plusAt, LEAD_BANDS, band, blendParams } from '../shared/model.js';
 
 const URL_BASE = process.env.BIDE_URL || 'https://bide.itejalgoyal.workers.dev';
 const KEY = process.env.BIDE_KEY;
@@ -53,6 +53,7 @@ const yesterday = () => new Date(Date.now() - 86400e3).toLocaleDateString('en-CA
 const DATE = args.date && args.date !== true ? args.date : yesterday();
 // A service day runs 3 am to 3 am, so late-night trips stay with their day.
 const FROM = Math.floor(localTime(DATE, 3));
+const SERVICE = DATE.replace(/-/g, '');
 const TO = Math.floor(FROM + 86400 + (localTime(DATE, 3) === localTime(DATE, 3) ? 0 : 0));
 
 // --- fetching -----------------------------------------------------------------
@@ -80,8 +81,7 @@ async function exportRows(table) {
 async function previousParams() {
   try {
     const days = await (await fetch(`${URL_BASE}/api/scores`)).json();
-    const prev = days.find((d) => d.date < DATE && d.params?.fitted);
-    return prev ? { ...prev.params.fitted, from: prev.date } : { ...DEFAULT_PARAMS, from: 'defaults' };
+    return blendParams(days.filter((d) => d.date < DATE), DEFAULT_PARAMS);
   } catch {
     return { ...DEFAULT_PARAMS, from: 'defaults' };
   }
@@ -104,6 +104,7 @@ const obs = new Map(); // tripId -> [{t, seq, status, known}]
 for (const row of vpRows) {
   for (const v of decodeVehicles(new Uint8Array(row.body)).vehicles) {
     if (!v.tripId || v.seq < 0 || !v.ts) continue;
+    if (v.startDate && v.startDate !== SERVICE) continue; // another day's run of the same trip id
     let list = obs.get(v.tripId);
     if (!list) obs.set(v.tripId, (list = []));
     const last = list[list.length - 1];
@@ -119,7 +120,10 @@ const snapshots = tuRows.map((row) => {
   const trips = JSON.parse(row.body.toString());
   return {
     ts: row.ts,
-    trips: trips.map(([tripId, route, , , , d]) => {
+    // Late at night the feed already carries tomorrow's run of the same trip
+    // id; only this service day's runs count, or tomorrow's timetable would
+    // overwrite today's (this put bide a day out on 2026-11-02).
+    trips: trips.filter(([, , start]) => !start || start === SERVICE).map(([tripId, route, , , , d]) => {
       tripRoute.set(tripId, route);
       let sm = sched.get(tripId);
       if (!sm) sched.set(tripId, (sm = new Map()));
@@ -172,14 +176,18 @@ function clockOffset(snap) {
   }
   if (d.length < 10) return 0;
   d.sort((a, b) => a - b);
-  return Math.round(d[d.length >> 1] / 3600) * 3600;
+  // Only the one-hour slip of a clock change is believed; anything else is a
+  // data problem, not a clock.
+  const h = Math.round(d[d.length >> 1] / 3600);
+  return Math.abs(h) === 1 ? h * 3600 : 0;
 }
 
 let blank = 0, offsetSnaps = 0;
+const offHist = {};
 const ev = { A: [], made: [], official: [], sched: [], off: [], h: [], hour: [], route: [], prevA: [], prevSched: [], nextSched: [], has: [] };
 for (const snap of snapshots) {
   const off = clockOffset(snap);
-  if (off) offsetSnaps++;
+  if (off) { offsetSnaps++; offHist[off] = (offHist[off] || 0) + 1; }
   for (const { tripId, stops } of snap.trips) {
     const arr = arrivals.get(tripId);
     if (!arr) continue;
@@ -209,7 +217,7 @@ for (const snap of snapshots) {
   }
 }
 const N = ev.A.length;
-if (offsetSnaps) console.log(`feed clock off by whole hours in ${offsetSnaps} of ${snapshots.length} prediction snapshots`);
+if (offsetSnaps) console.log(`feed clock off by whole hours in ${offsetSnaps} of ${snapshots.length} prediction snapshots:`, offHist);
 console.log(`events (prediction, then arrival, same set for every predictor): ${N}; dropped for a blank prediction: ${blank}`);
 
 // The models live in shared/model.js (the live bus card runs the same code);
@@ -275,15 +283,18 @@ function stats(errs) {
 }
 
 function score(filter, p) {
-  const out = { official: [], schedule: [], bide: [], bidePlus: [] };
+  // officialFixed is BC Transit's prediction with the feed's clock put
+  // right: the fair benchmark on days when the clock slipped.
+  const out = { official: [], officialFixed: [], schedule: [], bide: [], bidePlus: [] };
   for (let i = 0; i < N; i++) {
     if (!filter(i)) continue;
     out.official.push(ev.official[i] - ev.A[i]);
+    out.officialFixed.push(ev.official[i] + ev.off[i] - ev.A[i]);
     out.schedule.push(ev.sched[i] - ev.A[i]);
     out.bide.push(bide(i, p) - ev.A[i]);
     out.bidePlus.push(bidePlus(i, p) - ev.A[i]);
   }
-  return { official: stats(out.official), schedule: stats(out.schedule), bide: stats(out.bide), bidePlus: stats(out.bidePlus) };
+  return { official: stats(out.official), officialFixed: stats(out.officialFixed), schedule: stats(out.schedule), bide: stats(out.bide), bidePlus: stats(out.bidePlus) };
 }
 
 const buckets = BUCKETS.map(([lo, hi]) => ({ lo, hi, ...score((i) => ev.h[i] > lo * 60 && ev.h[i] <= hi * 60, params) }));
@@ -370,13 +381,24 @@ console.log(`fitted for next day: ${JSON.stringify(fitted)}`);
 if (DRY) process.exit(0);
 
 // --- 5. publish ----------------------------------------------------------------
+// A dropped connection (as on 2026-11-02, which lost 2026-11-01's board)
+// is retried a few times before giving up.
 async function post(body) {
-  const res = await fetch(`${URL_BASE}/api/ingest`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`ingest ${body.kind}: ${res.status} ${await res.text()}`);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(`${URL_BASE}/api/ingest`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (res.ok) return;
+      if (res.status < 500 || attempt >= 5) throw new Error(`ingest ${body.kind}: ${res.status} ${await res.text()}`);
+    } catch (e) {
+      if (attempt >= 5 || /ingest .*: 4\d\d/.test(e.message)) throw e;
+    }
+    await new Promise((r) => setTimeout(r, 2000 * attempt));
+  }
 }
 const rows = [...arrivals].map(([trip, m]) => ({
   trip,
