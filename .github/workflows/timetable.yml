@@ -13,6 +13,11 @@ on:
   schedule:
     - cron: '0 12 * * 0'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Deploy even if the timetable has not changed (to test the deploy)'
+        type: boolean
+        default: false
 
 jobs:
   refresh:
@@ -43,13 +48,13 @@ jobs:
           echo "live=$live new=$new"
           if [ "$live" = "$new" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; else echo "changed=yes" >> "$GITHUB_OUTPUT"; fi
       - name: Deploy the new timetable
-        if: steps.cmp.outputs.changed == 'yes'
+        if: steps.cmp.outputs.changed == 'yes' || inputs.force
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
-            echo "::error::BC Transit published a new timetable, but CLOUDFLARE_API_TOKEN isn't set, so it can't deploy. Run 'npm run bake && npm run deploy' locally, or add the secret."
+            echo "::error::A deploy is needed (new timetable or forced), but CLOUDFLARE_API_TOKEN isn't set, so it can't deploy. Run 'npm run bake && npm run deploy' locally, or add the secret."
             exit 1
           fi
           npm run deploy
