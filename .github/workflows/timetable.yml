@@ -1,0 +1,55 @@
+# Every Sunday, re-bake BC Transit's timetable. If it changed (new service
+# period, new routes, detours baked into the schedule), rebuild the site and
+# deploy it. The map, buildings and street data are taken from the live site
+# as they are, so only the timetable is new.
+#
+# Deploying needs two repository secrets: CLOUDFLARE_API_TOKEN (a token with
+# "Edit Cloudflare Workers" on this account) and CLOUDFLARE_ACCOUNT_ID.
+# Without them the run still checks, and fails when a new timetable is
+# waiting, so the owner hears about it.
+name: timetable
+
+on:
+  schedule:
+    - cron: '0 12 * * 0'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fetch the live site's data files
+        run: |
+          mkdir -p web/public/data
+          for f in map.json height.png buildings.dat streets.json transit.json; do
+            curl -fsSL "https://bide.tgoyal.me/data/$f" -o "web/public/data/$f"
+          done
+          node -e "console.log('live timetable', require('./web/public/data/transit.json').meta?.version ?? 'unknown')"
+          cp web/public/data/transit.json /tmp/live-transit.json
+      - name: Bake the current timetable
+        run: node scripts/bake-gtfs.mjs
+      - name: Compare
+        id: cmp
+        run: |
+          live=$(node -e "console.log(require('/tmp/live-transit.json').meta?.version ?? 'none')")
+          new=$(node -e "console.log(require('./web/public/data/transit.json').meta.version)")
+          echo "live=$live new=$new"
+          if [ "$live" = "$new" ]; then echo "changed=no" >> "$GITHUB_OUTPUT"; else echo "changed=yes" >> "$GITHUB_OUTPUT"; fi
+      - name: Deploy the new timetable
+        if: steps.cmp.outputs.changed == 'yes'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::BC Transit published a new timetable, but CLOUDFLARE_API_TOKEN isn't set, so it can't deploy. Run 'npm run bake && npm run deploy' locally, or add the secret."
+            exit 1
+          fi
+          npm run deploy

@@ -1,0 +1,20 @@
+# Every morning, after the scoreboard run, check the live site. A failure
+# here means something needs a person; GitHub emails the repo owner about
+# failed runs. The run's summary lists what was checked.
+name: health
+
+on:
+  schedule:
+    - cron: '30 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node pipeline/health.mjs

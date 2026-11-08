@@ -7,10 +7,14 @@ const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
 const OP = '?operatorIds=48';
 
-const CODE_VERSION = 7;
+const CODE_VERSION = 8;
 const TICK = 10_000; // vehicle feed refreshes about every 15 s
 const TRIP_EVERY = 60_000;
 const ALERT_EVERY = 300_000;
+// Raw snapshots are kept 30 days: long past being scored (the nightly run
+// takes yesterday), and it holds storage near 1.5 GB instead of filling 4 GB.
+const KEEP_DAYS = 30;
+const PRUNE_EVERY = 3_600_000;
 // The free plan stops writes at 5 GB. Stop well short of it, whatever the plan.
 const MAX_DB_BYTES = 4e9;
 
@@ -138,6 +142,10 @@ export class Recorder extends DurableObject {
       st.alAt = now;
       jobs.push(this.record('al', 'alerts.pb', full));
     }
+    if (now - (st.pruneAt || 0) >= PRUNE_EVERY) {
+      st.pruneAt = now;
+      jobs.push(this.prune());
+    }
     const results = await Promise.allSettled(jobs);
     for (const r of results) {
       if (r.status === 'rejected') this.fail(String(r.reason?.message || r.reason));
@@ -259,6 +267,11 @@ export class Recorder extends DurableObject {
       stops.push({ seq: q, id: t.ids[i / 3] || '', official: t.stops[i + 1], sched: Math.round(s), bide: Math.round(bide), plus: Math.round(plusAt(now, official, bide, s, p)) });
     }
     return { now: Math.round(now), feed: this.tu.ts, off, passed: pj >= 0 ? { seq: pj, at: Math.round(pass.A), delay: Math.round(pass.A - pS - off) } : null, stops };
+  }
+
+  async prune() {
+    const cut = Math.floor(Date.now() / 1000) - KEEP_DAYS * 86400;
+    for (const t of ['vp', 'tu', 'al']) this.sql.exec(`DELETE FROM ${t} WHERE ts < ?`, cut);
   }
 
   noteGtfs(name) {

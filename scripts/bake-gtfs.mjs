@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import readline from 'node:readline';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { toXY } from '../shared/geo.js';
 
 const OUT = new URL('../web/public/data/', import.meta.url);
@@ -133,13 +134,17 @@ for (const [trip, f] of firstStop) {
   const si = trips[trip][1];
   for (const d of tripDays.get(trip)) freq[si][dayOff[d] + f.hour]++;
 }
+// version = fingerprint of the trips, so a refresh can tell whether BC
+// Transit actually changed the timetable; baked = when this ran.
+const version = createHash('sha1').update(JSON.stringify(Object.entries(trips).sort())).digest('hex').slice(0, 10);
 const transit = {
+  meta: { version, baked: new Date().toISOString().slice(0, 10) },
   routes, stops, shapes, headsigns,
   freq: { days: DAYS, shapes: freq },
 };
 fs.writeFileSync(new URL('transit.json', OUT), JSON.stringify(transit));
 fs.writeFileSync(new URL('trips.json', OUT), JSON.stringify(trips));
 console.log(
-  `routes ${routes.length}, stops ${stops.length}, shapes ${shapes.length}, trips ${Object.keys(trips).length}, ` +
+  `timetable ${version}: routes ${routes.length}, stops ${stops.length}, shapes ${shapes.length}, trips ${Object.keys(trips).length}, ` +
     `services on sample days ${svcDays.size}, trips on sample days ${firstStop.size}`,
 );
