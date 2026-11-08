@@ -187,6 +187,7 @@ export const shared = {
   uExag: { value: EXAG },
   uExtent: { value: new THREE.Vector4(EXTENT.x0, EXTENT.y0, EXTENT.w, EXTENT.h) },
   uMpp: { value: 2 },
+  uSea: { value: 0.5 }, // wave height offshore, metres
 };
 
 export async function createWorld(scene, map) {
@@ -242,6 +243,7 @@ export async function createWorld(scene, map) {
     fragmentShader: /* glsl */ `
       uniform vec3 uDeep, uShallow, uFoam;
       uniform sampler2D uCoast;
+      uniform float uSea;
       varying vec3 vWorld;
       ${NOISE_GLSL}
       ${HAZE_GLSL}
@@ -260,7 +262,9 @@ export async function createWorld(scene, map) {
         float n0 = fbm(p + uWind * t * 0.02);
         float nx = fbm(p + vec2(e, 0.0) + uWind * t * 0.02) - n0;
         float ny = fbm(p + vec2(0.0, e) + uWind * t * 0.02) - n0;
-        vec3 nrm = normalize(vec3(-nx * 2.2, 1.0, ny * 2.2));
+        // The live wave height (Open-Meteo marine) sets how rough it looks.
+        float rough = 1.4 + uSea * 1.3;
+        vec3 nrm = normalize(vec3(-nx * rough, 1.0, ny * rough));
 
         vec3 col = mix(uShallow, uDeep, smoothstep(10.0, 1400.0, d));
         col = mix(col, uDeep * 0.85, smoothstep(2500.0, 4000.0, d));
@@ -269,8 +273,11 @@ export async function createWorld(scene, map) {
         float wob = noise(m * 0.02 + t * 0.15) * 14.0;
         float lip = 1.0 - smoothstep(3.0, 16.0 + wob * 0.6, d);
         float band = sin((d + wob) * 0.075 + t * 1.3);
-        float bands = smoothstep(0.82, 1.0, band) * (1.0 - smoothstep(15.0, 170.0, d)) * 0.65;
-        float foam = clamp((lip + bands) * inside, 0.0, 1.0);
+        float bands = smoothstep(0.82, 1.0, band) * (1.0 - smoothstep(15.0, 90.0 + uSea * 120.0, d)) * (0.45 + uSea * 0.3);
+        // Whitecaps offshore once the waves pass about a metre.
+        float caps = smoothstep(0.8 - 0.06 * uSea, 0.84, noise(m * 0.03 + uWind * t * 0.05) * noise(m * 0.011 - t * 0.05) * 1.6)
+          * smoothstep(0.7, 1.6, uSea) * smoothstep(150.0, 500.0, d) * 0.7;
+        float foam = clamp((lip + bands) * inside + caps, 0.0, 1.0);
 
         vec3 view = normalize(uCamPos - vWorld);
         float diff = 0.75 + 0.25 * max(dot(nrm, uSun), 0.0);

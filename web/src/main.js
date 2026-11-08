@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import * as SunCalc from 'suncalc';
 import { createWorld, shared, EXAG } from './world.js';
 import { createControls } from './controls.js';
 import { createSky } from './sky.js';
@@ -27,7 +28,7 @@ const [map, transit] = await Promise.all([
 
 const canvas = $('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); // tuned live by adapt()
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -63,6 +64,7 @@ const outages = createOutages(scene, world.surfaceY, (list) => {
 // --- time -----------------------------------------------------------------
 // The dial drives the light and the activity columns. Buses are always live.
 const TZ = 'America/Vancouver';
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 function victoriaClock(date = new Date()) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat('en-CA', { timeZone: TZ, hour: 'numeric', minute: 'numeric', weekday: 'short', hourCycle: 'h23' })
@@ -91,7 +93,7 @@ function setHour(h, { live = false } = {}) {
   document.body.classList.toggle('scrubbing', !live);
   $('dial-head').style.left = `${(time.hour / 24) * 100}%`;
   $('dial-time').textContent = fmtHour(time.hour);
-  $('day-type').textContent = { weekday: 'Weekday schedule', saturday: 'Saturday schedule', sunday: 'Sunday schedule' }[time.day];
+  $('day-type').textContent = `${{ weekday: 'Weekday', saturday: 'Saturday', sunday: 'Sunday' }[time.day]} timetable · buses stay live`;
   network.setTime(time.day, time.hour);
 }
 setHour(time.hour, { live: true });
@@ -185,26 +187,46 @@ $('home').onclick = () => {
 };
 
 // --- conditions -------------------------------------------------------------
+const hm = (t) => new Date(t).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
+const MOON = ['new moon', 'waxing crescent', 'first quarter', 'waxing gibbous', 'full moon', 'waning gibbous', 'last quarter', 'waning crescent'];
 function showConditions(s) {
   if (s.weather) {
     const w = s.weather;
-    $('weather').textContent = `${w.temp}° · ${w.text} · wind ${w.wind} km/h ${w.from}`;
+    $('weather').textContent = `${w.temp}°${Math.abs(w.feels - w.temp) >= 2 ? ` (feels ${w.feels}°)` : ''} · ${w.text}`;
+    $('c-wind').textContent = `${w.wind} km/h from the ${w.from}${w.gust >= w.wind + 10 ? `, gusts ${w.gust}` : ''}`;
   }
-  if (s.air) {
-    const a = s.air.aqi;
-    const word = a <= 50 ? 'good' : a <= 100 ? 'moderate' : a <= 150 ? 'poor for some' : a <= 200 ? 'unhealthy' : 'very unhealthy';
-    $('air').textContent = `Air ${word} · AQI ${a}`;
-    $('air').className = 'air ' + (a <= 50 ? 'ok' : a <= 100 ? 'meh' : 'bad');
-    $('air').title = `US AQI ${a}; fine particles (PM2.5) ${s.air.pm.toFixed(0)} µg/m³. From Open-Meteo's air-quality model.`;
+  if (s.aqhi) {
+    const v = Math.max(1, Math.round(s.aqhi.v));
+    const word = v <= 3 ? 'Low risk' : v <= 6 ? 'Moderate risk' : v <= 10 ? 'High risk' : 'Very high risk';
+    $('c-air').textContent = `${word} · AQHI ${v}`;
+    $('c-air').className = v <= 3 ? 'ok' : v <= 6 ? 'meh' : 'bad';
+  } else if (s.air) {
+    $('c-air').textContent = `US AQI ${s.air.aqi}`;
   }
   if (s.tide) {
     const t = s.tide;
-    const turn = t.turn
-      ? ` · ${t.turn.high ? 'high' : 'low'} ${t.turn.v.toFixed(1)} m at ${new Date(t.turn.t).toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' })}`
-      : '';
-    $('tide').textContent = `Tide ${t.v.toFixed(1)} m, ${t.rising ? 'rising' : 'falling'}${turn}`;
+    $('c-tide').textContent = `${t.v.toFixed(1)} m, ${t.rising ? 'rising' : 'falling'}${t.turn ? ` · ${t.turn.high ? 'high' : 'low'} at ${hm(t.turn.t)}` : ''}`;
+  }
+  if (s.sea) {
+    const e = s.sea;
+    $('c-sea').textContent = `${e.h.toFixed(1)} m waves from the ${e.from} · ${Math.round(e.temp)}°C water`;
+  }
+  const now = new Date(), sc = SunCalc.getTimes(now, 48.43, -123.37);
+  const next = now < sc.sunrise ? `rises ${hm(sc.sunrise)}` : now < sc.sunset ? `sets ${hm(sc.sunset)}` : `rises ${hm(SunCalc.getTimes(new Date(+now + 86400e3), 48.43, -123.37).sunrise)}`;
+  $('c-sun').textContent = next;
+  const ph = SunCalc.getMoonIllumination(now);
+  $('c-moon').textContent = `${MOON[Math.round(ph.phase * 8) % 8]}, ${Math.round(ph.fraction * 100)}% lit`;
+  // An Environment Canada warning in force for Greater Victoria.
+  const wn = s.warnings?.[0];
+  $('warn').hidden = !wn;
+  if (wn) {
+    $('warn').className = `warn ${wn.colour || 'yellow'}`;
+    const body = (wn.text || '').split('\n\n').slice(0, 2).join(' ').replace(/\s+/g, ' ');
+    $('warn').innerHTML = `<b>${esc(wn.name[0].toUpperCase() + wn.name.slice(1))}</b> <span>until ${hm(wn.until)} ${new Date(wn.until).toDateString() !== now.toDateString() ? 'tomorrow' : ''}</span><p>${esc(body)} <i>Environment Canada</i></p>`;
   }
 }
+setInterval(() => showConditions(weather.state), 60e3); // sun, moon and countdowns move on
+$('warn').onclick = () => $('warn').setAttribute('aria-expanded', $('warn').getAttribute('aria-expanded') !== 'true');
 
 // --- the recorder, for the scoreboard teaser ------------------------------
 async function loadStatus() {
@@ -225,6 +247,23 @@ loadStatus();
 setInterval(loadStatus, 60000);
 $('score-open').onclick = () => $('score').classList.remove('hidden');
 $('score').querySelector('.close').onclick = () => $('score').classList.add('hidden');
+// The guide: what everything on the map is. Offered once to first-time visitors.
+const openGuide = (on = true) => $('guide').classList.toggle('hidden', !on);
+$('guide-open').onclick = () => openGuide();
+$('guide').querySelector('.close').onclick = () => openGuide(false);
+addEventListener('keydown', (e) => {
+  if (e.target.closest?.('input, textarea')) return;
+  if (e.key === '?') openGuide($('guide').classList.contains('hidden'));
+  if (e.key === 'Escape') { openGuide(false); $('score').classList.add('hidden'); $('alerts').classList.add('hidden'); }
+});
+try {
+  if (!localStorage.getItem('bide-guided')) {
+    setTimeout(() => $('guide-hint').classList.add('on'), 6000);
+    setTimeout(() => $('guide-hint').classList.remove('on'), 16000);
+    localStorage.setItem('bide-guided', '1');
+  }
+} catch { /* private mode: no hint */ }
+$('guide-hint').onclick = () => { $('guide-hint').classList.remove('on'); openGuide(); };
 
 // --- the scoreboard ---------------------------------------------------------
 const mmss = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s`);
@@ -335,7 +374,6 @@ async function loadAlerts() {
       </div>`).join('');
   } catch { /* stay quiet */ }
 }
-const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 loadAlerts();
 setInterval(loadAlerts, 5 * 60e3);
 $('alerts-open').onclick = () => $('alerts').classList.remove('hidden');
@@ -567,6 +605,18 @@ function frame() {
     $('clock').textContent = new Date().toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
   }
   renderer.render(scene, camera);
+  adapt(dt);
+}
+
+// Adaptive sharpness: if frames run slow for a couple of seconds (an older
+// phone, a hot laptop), draw fewer pixels; if there's room again, more.
+const maxDpr = Math.min(devicePixelRatio, 2);
+let slow = 0, quick = 0, dpr = maxDpr;
+function adapt(dt) {
+  if (document.hidden) return;
+  if (dt > 1 / 40) { slow += dt; quick = 0; } else { quick += dt; slow = Math.max(0, slow - dt * 0.5); }
+  if (slow > 2 && dpr > 1) { dpr = Math.max(1, dpr - 0.25); renderer.setPixelRatio(dpr); slow = 0; }
+  else if (quick > 8 && dpr < maxDpr) { dpr = Math.min(maxDpr, dpr + 0.25); renderer.setPixelRatio(dpr); quick = 0; }
 }
 renderer.setAnimationLoop(frame);
 

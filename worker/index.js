@@ -62,6 +62,34 @@ async function latestParams(env) {
   return p;
 }
 
+const NEWS_FEEDS = [
+  ['CHEK', 'https://www.cheknews.ca/feed/'],
+  ['Times Colonist', 'https://www.timescolonist.com/rss/local-news'],
+  ['Victoria News', 'https://www.vicnews.com/feed/'],
+  ['Victoria Buzz', 'https://victoriabuzz.com/feed/'],
+];
+const unescape = (t) => t
+  .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+  .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+  .replace(/&quot;/g, '"').replace(/&apos;|&rsquo;|&lsquo;/g, "'").replace(/&ldquo;|&rdquo;/g, '"')
+  .replace(/&ndash;|&mdash;/g, '–').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+  .replace(/\s+/g, ' ').trim();
+async function readFeed([source, feed]) {
+  const res = await fetch(feed, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; bide; +https://bide.itejalgoyal.workers.dev)' }, signal: AbortSignal.timeout(6000), cf: { cacheTtl: 600 } });
+  if (!res.ok) throw new Error(res.status);
+  const xml = await res.text();
+  const tag = (item, t) => (item.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1] || '';
+  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 15).map(([, item]) => ({
+    source,
+    title: unescape(tag(item, 'title')).slice(0, 200),
+    link: unescape(tag(item, 'link')),
+    at: Date.parse(tag(item, 'pubDate')) || 0,
+    text: unescape(tag(item, 'description')).slice(0, 280),
+  })).filter((i) => /^https:\/\//.test(i.link));
+}
+
 export class Recorder extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);

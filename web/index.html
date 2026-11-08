@@ -36,12 +36,16 @@
         <span class="wordmark">bide</span>
         <span class="brand-place">Victoria, live</span>
       </div>
-      <div class="brand-meta">
-        <span id="clock">--:--</span>
-        <span id="weather"></span>
-      </div>
-      <div class="brand-meta"><span id="air" class="air"></span></div>
-      <div id="tide" class="brand-meta"></div>
+      <div class="brand-meta"><span id="clock">--:--</span><span id="weather"></span></div>
+      <button id="warn" class="warn" hidden aria-expanded="false"></button>
+      <dl id="cond" class="cond">
+        <div title="Open-Meteo, updated every 10 minutes"><dt>Wind</dt><dd id="c-wind">–</dd></div>
+        <div title="Environment Canada's Air Quality Health Index for Victoria/Saanich: 1–3 low risk, 4–6 moderate, 7–10 high"><dt>Air</dt><dd id="c-air">–</dd></div>
+        <div title="Fisheries and Oceans Canada prediction for Victoria Harbour"><dt>Tide</dt><dd id="c-tide">–</dd></div>
+        <div title="Open-Meteo marine model, just off Dallas Road"><dt>Sea</dt><dd id="c-sea">–</dd></div>
+        <div title="Worked out for Victoria from the date"><dt>Sun</dt><dd id="c-sun">–</dd></div>
+        <div title="Worked out from the date"><dt>Moon</dt><dd id="c-moon">–</dd></div>
+      </dl>
       <p id="now" class="now"></p>
       <a id="news-ticker" class="ticker" target="_blank" rel="noopener" hidden></a>
       <button id="alerts-open" class="alerts-chip" hidden></button>
@@ -71,6 +75,7 @@
         <label class="toggle"><input type="checkbox" id="t-streets" checked /><span></span>Street names</label>
       </details>
       <button id="home" class="ghost">Recentre on Victoria</button>
+      <button id="guide-open" class="ghost guide-btn">What am I looking at?</button>
     </aside>
 
     <section id="stats" class="card">
@@ -104,6 +109,7 @@
       <button id="rot-r" title="Turn right (E)" aria-label="Turn right">&#8635;</button>
     </nav>
 
+    <button id="guide-hint" class="guide-hint">New here? <b>What everything on the map means</b></button>
     <div id="tooltip"></div>
 
     <article id="bus" class="card hidden">
@@ -151,6 +157,50 @@
         Nations. Map data © OpenStreetMap contributors (Protomaps). Elevation: AWS Terrain Tiles. Transit data: BC
         Transit open data. Road events: DriveBC. Power outages: BC Hydro. Earthquakes: USGS. Headlines: CHEK, Times Colonist, Victoria News, Victoria Buzz. Weather, wind and air quality: Open-Meteo. Buildings: OpenStreetMap. Tides: Fisheries and Oceans Canada.
       </p>
+    </article>
+
+    <article id="guide" class="card hidden" aria-label="Guide to the map">
+      <button class="close" aria-label="Close">×</button>
+      <h2>What you're looking at</h2>
+      <p class="lede">A live 3D map of Greater Victoria. Everything marked <b>live</b> comes from a public feed and refreshes on its own; the time it updates is noted.</p>
+
+      <h3>Buses <span class="tag live">live · every 10 s</span></h3>
+      <dl class="g">
+        <dt><i class="sw bus"></i></dt><dd><b>A bus</b>, drawn where BC Transit's GPS says it is, gliding between reports. The white arrow on its roof points the way it's going.</dd>
+        <dt><i class="sw dots"></i></dt><dd><b>Its colour</b> shows lateness, crowding or route: pick with <i>Colour buses by</i>. Grey means BC Transit has sent no prediction for that trip.</dd>
+        <dt><i class="sw pulse"></i></dt><dd><b>A slow ring</b> under a bus means it's stopped at a stop.</dd>
+        <dt><i class="sw ribbon"></i></dt><dd><b>Tap a bus</b> to light up its route ahead and its next four stops, with BC Transit's arrival time beside bide's own.</dd>
+      </dl>
+
+      <h3>The scoreboard <span class="tag">every morning</span></h3>
+      <p>Every BC Transit arrival prediction is recorded and later checked against when the bus actually arrived. bide's two models answer the same questions using only what was known at the time: <b>bide</b> works from the timetable and the bus's own progress; <b>bide+</b> blends that with BC Transit's figure, with weights learned on earlier days.</p>
+
+      <h3>The city</h3>
+      <dl class="g">
+        <dt><i class="sw freq"></i></dt><dd><b>Terracotta lines</b>: how many buses an hour are scheduled on each street at the time on the time bar. Thicker means more. From the timetable, not live.</dd>
+        <dt><i class="sw bldg"></i></dt><dd><b>Buildings</b> rise as you zoom in (OpenStreetMap). Lit windows at night are for atmosphere, not real occupancy.</dd>
+        <dt><i class="sw street"></i></dt><dd><b>Street names</b> appear once you're close.</dd>
+      </dl>
+
+      <h3>Live conditions</h3>
+      <dl class="g">
+        <dt><i class="sw wind"></i></dt><dd><b>Pale drifting wisps</b>: the wind right now across 20 points of the region (Open-Meteo, every 15 min). Faster and brighter means stronger. Seen only from city height.</dd>
+        <dt><i class="sw sea"></i></dt><dd><b>The sea</b> gets rougher with the real wave height off Dallas Road, with whitecaps above about a metre (Open-Meteo marine, every 30 min).</dd>
+        <dt><i class="sw quake"></i></dt><dd><b>Rippling rings</b>: earthquakes in the past week within 250 km (USGS). Coral is the last day; rings on the horizon are beyond the map, in their true direction. Hover one for details.</dd>
+        <dt><i class="sw road"></i></dt><dd><b>Striped stretches</b> of road: amber is road work, red an incident (DriveBC, every 5 min).</dd>
+        <dt><i class="sw outage"></i></dt><dd><b>Tinted patches</b> with rings: power outages (BC Hydro, every 2 min).</dd>
+        <dt><i class="sw news"></i></dt><dd><b>Paper pins</b>: local headlines that name a neighbourhood (CHEK, Times Colonist, Victoria News, Victoria Buzz).</dd>
+        <dt><i class="sw warn"></i></dt><dd><b>A coloured banner</b> at the top: a weather warning from Environment Canada in force for Greater Victoria.</dd>
+      </dl>
+
+      <h3>Not live</h3>
+      <p><b>Harbour life</b>: the floatplanes, harbour ferries, the Coho, sailboats and gulls are animation, there to make the harbour feel lived in. Free aircraft and ship-tracking feeds don't allow it.</p>
+
+      <h3>The time bar</h3>
+      <p>Drag it to see the light and the timetable at any hour of today; press ▶ to play the day. Buses always show where they are <b>right now</b>. <i>Live</i> brings everything back to the present.</p>
+
+      <h3>Getting around</h3>
+      <p class="keys"><span>Drag to move</span><span>Scroll or pinch to zoom</span><span>Right-drag or twist two fingers to turn</span><span><kbd>Q</kbd> <kbd>E</kbd> turn</span><span><kbd>N</kbd> face north</span><span><kbd>?</kbd> this guide</span></p>
     </article>
 
     <article id="alerts" class="card hidden">

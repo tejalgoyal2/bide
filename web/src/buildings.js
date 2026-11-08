@@ -81,8 +81,10 @@ export function createBuildings(scene, world) {
   });
   let mesh = null;
 
-  // Decode, then build in slices so the page never stalls.
-  (async () => {
+  // Fetched only the first time someone zooms in (700 kB saved for everyone
+  // else), then decoded and built in slices so the page never stalls.
+  let started = false;
+  const load = () => (async () => {
     const res = await fetch('/data/buildings.dat');
     const raw = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
     const d = new Int16Array(raw);
@@ -153,6 +155,7 @@ export function createBuildings(scene, world) {
 
   let enabled = true;
   function update(dt, dist) {
+    if (!started && enabled && dist < SHOW_FROM * 0.85) { started = true; load(); }
     const target = enabled ? THREE.MathUtils.smoothstep(dist, FULL_AT, SHOW_FROM) : 0;
     uGrow.value += ((1 - target) - uGrow.value) * Math.min(1, dt * 1.6);
     if (mesh) mesh.visible = uGrow.value > 0.005;
