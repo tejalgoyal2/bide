@@ -50,7 +50,7 @@ const focus = createFocus(scene, world, $('pins'));
 const streets = createStreets($('streets'), world.surfaceY);
 const news = createNews($('news-pins'), $('news-ticker'), world.surfaceY);
 const eggs = createEggs(scene, $('eggs'), world.surfaceY);
-const stops = createStops(scene, transit, world.heightAt);
+const stops = createStops(scene, transit, world.meshHeight);
 const quakes = createQuakes(scene, world.surfaceY, (list) => {
   const day = list.filter((q) => Date.now() - q.time < 86400e3).length;
   $('n-quake').textContent = list.length ? ` · ${day ? `${day} today` : `${list.length} this week`}` : ' · quiet week';
@@ -77,7 +77,8 @@ function victoriaClock(date = new Date()) {
 }
 const dayTypeOf = (wd) => (wd === 'Sat' ? 'saturday' : wd === 'Sun' ? 'sunday' : 'weekday');
 const fmtHour = (h) => {
-  const H = Math.floor(h) % 24, M = Math.floor((h % 1) * 60);
+  const t = Math.floor(h * 60 + 1e-6); // 15 + 47/60 is 15.78333…, a hair under 47 minutes
+  const H = Math.floor(t / 60) % 24, M = t % 60;
   return `${((H + 11) % 12) + 1}:${String(M).padStart(2, '0')} ${H < 12 ? 'am' : 'pm'}`;
 };
 
@@ -195,7 +196,7 @@ const MOON = ['new moon', 'waxing crescent', 'first quarter', 'waxing gibbous', 
 function showConditions(s) {
   if (s.weather) {
     const w = s.weather;
-    $('weather').textContent = `${w.temp}°${Math.abs(w.feels - w.temp) >= 2 ? ` (feels ${w.feels}°)` : ''} · ${w.text}`;
+    $('weather').innerHTML = `${w.temp}°${Math.abs(w.feels - w.temp) >= 2 ? ` (feels ${w.feels}°)` : ''}<i class="sep">·</i>${esc(w.text)}`;
     $('c-wind').textContent = `${w.wind} km/h from the ${w.from}${w.gust >= w.wind + 10 ? `, gusts ${w.gust}` : ''}`;
   }
   if (s.aqhi) {
@@ -219,6 +220,12 @@ function showConditions(s) {
   $('c-sun').textContent = next;
   const ph = SunCalc.getMoonIllumination(now);
   $('c-moon').textContent = `${MOON[Math.round(ph.phase * 8) % 8]}, ${Math.round(ph.fraction * 100)}% lit`;
+  // The folded one-line version of the grid.
+  const bits = [];
+  if (s.weather) bits.push(`Wind ${s.weather.wind} km/h ${s.weather.from}`);
+  if (s.tide) bits.push(`tide ${s.tide.rising ? 'rising' : 'falling'}`);
+  if (s.aqhi) { const v = Math.max(1, Math.round(s.aqhi.v)); bits.push(`air ${v <= 3 ? 'good' : v <= 6 ? 'moderate' : 'poor'}`); }
+  if (bits.length) $('cond-line').innerHTML = bits.map(esc).join('<i class="sep">·</i>');
   // An Environment Canada warning in force for Greater Victoria.
   const wn = s.warnings?.[0];
   $('warn').hidden = !wn;
@@ -229,6 +236,18 @@ function showConditions(s) {
   }
 }
 setInterval(() => showConditions(weather.state), 60e3); // sun, moon and countdowns move on
+{
+  let open = false;
+  try { open = localStorage.getItem('bide-cond') === '1'; } catch {}
+  const setOpen = (on) => {
+    $('brand').classList.toggle('cond-open', on);
+    $('cond-sum').setAttribute('aria-expanded', on);
+    $('cond-sum').title = on ? 'Hide live conditions' : 'Show live conditions';
+    try { localStorage.setItem('bide-cond', on ? '1' : '0'); } catch {}
+  };
+  setOpen(open);
+  $('cond-sum').onclick = () => setOpen(!$('brand').classList.contains('cond-open'));
+}
 $('warn').onclick = () => $('warn').setAttribute('aria-expanded', $('warn').getAttribute('aria-expanded') !== 'true');
 
 // --- the recorder, for the scoreboard teaser ------------------------------
@@ -652,6 +671,7 @@ setTimeout(() => document.body.classList.remove('loading'), 2800);
 const clock = new THREE.Clock();
 const SMOKE = new THREE.Color('#c99a62');
 let statT = 0, nightClass = null;
+let lastLiveTick = -1;
 function frame() {
   const dt = Math.min(0.05, clock.getDelta());
   const t = clock.elapsedTime;
@@ -662,8 +682,11 @@ function frame() {
     time.hour += dt * 1.1;
     if (time.hour >= 24) time.hour -= 24;
     setHour(time.hour);
-  } else if (time.live && Math.floor(t) % 20 === 0) {
-    setHour(victoriaClock().hour, { live: true });
+  } else if (time.live && Math.floor(t) !== lastLiveTick) {
+    // Once a second, so the dial's clock never lags the header's.
+    lastLiveTick = Math.floor(t);
+    const h = victoriaClock().hour;
+    if (Math.floor(h * 60 + 1e-6) !== Math.floor(time.hour * 60 + 1e-6)) setHour(h, { live: true });
   }
   const sun = sky.set(time.live ? new Date() : dateForHour(time.hour));
   // Wildfire smoke: high fine-particle levels tint the haze amber.

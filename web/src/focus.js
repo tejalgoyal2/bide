@@ -16,7 +16,12 @@ export function createFocus(scene, world, layer) {
       void main() {
         vec3 p = position + vec3(normal2.x, 0.0, normal2.y) * side * uWidth;
         vAlong = along; vSide = side;
-        gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+        // Lies on the street, hidden by buildings in front of it; nudged
+        // toward the camera so the ground doesn't swallow it.
+        vec4 mv = viewMatrix * vec4(p, 1.0);
+        float d = length(mv.xyz);
+        mv.xyz *= max(0.0, 1.0 - (3.0 + d * 0.005) / d);
+        gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: /* glsl */ `
       uniform float uTime, uNight, uS, uWidth, uFade;
@@ -32,7 +37,7 @@ export function createFocus(scene, world, layer) {
         #include <colorspace_fragment>
       }`,
     transparent: true,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
@@ -48,7 +53,7 @@ export function createFocus(scene, world, layer) {
     for (let i = 0; i < n; i++) {
       const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
       const dx = xy[2 * b] - xy[2 * a], dy = xy[2 * b + 1] - xy[2 * a + 1], l = Math.hypot(dx, dy) || 1;
-      const x = xy[2 * i], y = xy[2 * i + 1], h = world.heightAt(x, y) * 1.7 + 4;
+      const x = xy[2 * i], y = xy[2 * i + 1], h = world.meshHeight(x, y) * 1.7 + 1;
       for (let k = 0; k < 2; k++) {
         const j = i * 2 + k;
         pos.set([x, h, -y], j * 3);

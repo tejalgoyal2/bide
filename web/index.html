@@ -38,6 +38,7 @@
       </div>
       <div class="brand-meta"><span id="clock">--:--</span><span id="weather"></span></div>
       <button id="warn" class="warn" hidden aria-expanded="false"></button>
+      <button id="cond-sum" class="cond-sum" aria-expanded="false" aria-controls="cond" title="Show live conditions"><span id="cond-line">Live conditions</span><i class="chev" aria-hidden="true"></i></button>
       <dl id="cond" class="cond">
         <div title="Open-Meteo, updated every 10 minutes"><dt>Wind</dt><dd id="c-wind">–</dd></div>
         <div title="Environment Canada's Air Quality Health Index for Victoria/Saanich: 1–3 low risk, 4–6 moderate, 7–10 high"><dt>Air</dt><dd id="c-air">–</dd></div>
@@ -177,7 +178,7 @@
 
       <h3>Buses <span class="tag live">live · every 10 s</span></h3>
       <dl class="g">
-        <dt><i class="sw bus"></i></dt><dd><b>A bus</b>, drawn where BC Transit's GPS says it is, gliding between reports. The white arrow on its roof points the way it's going.</dd>
+        <dt><i class="sw bus"></i></dt><dd><b>A bus</b>, following its route along the streets between BC Transit's GPS reports, which come every 15 to 30 seconds. So you see each bus about one report behind real time, but it never runs past where it has really been. The white arrow on its roof points the way it's going; a faint outline means it's behind a building.</dd>
         <dt><i class="sw dots"></i></dt><dd><b>Its colour</b> shows lateness, crowding or route: pick with <i>Colour buses by</i>. Grey means BC Transit has sent no prediction for that trip.</dd>
         <dt><i class="sw pulse"></i></dt><dd><b>A slow ring</b> under a bus means it's stopped at a stop.</dd>
         <dt><i class="sw bunch"></i></dt><dd><b>A dashed amber ring</b>: the bus is <b>bunched</b>, running within 350 m of another bus on the same route and direction. Riders behind them wait twice as long, then two arrive together. The count is in the bottom-left card; click it to visit each pair.</dd>

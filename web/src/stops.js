@@ -11,7 +11,7 @@ export function createStops(scene, transit, heightAt) {
   const n = list.length;
   const pos = new Float32Array(n * 3), sel = new Float32Array(n);
   // Final terrain height (the intro's rising city is ignored: stops appear later).
-  list.forEach(([, , x, y], i) => pos.set([x, heightAt(x, y) * EXAG + 4, -y], i * 3));
+  list.forEach(([, , x, y], i) => pos.set([x, heightAt(x, y) * EXAG + 1.5, -y], i * 3));
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('aSel', new THREE.BufferAttribute(sel, 1).setUsage(THREE.DynamicDrawUsage));
@@ -23,7 +23,11 @@ export function createStops(scene, transit, heightAt) {
       varying float vSel;
       void main() {
         vSel = aSel;
-        gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
+        // Depth-tested so buildings in front hide it, nudged toward the camera.
+        vec4 mv = viewMatrix * vec4(position, 1.0);
+        float d = length(mv.xyz);
+        mv.xyz *= max(0.0, 1.0 - (3.0 + d * 0.005) / d);
+        gl_Position = projectionMatrix * mv;
         gl_PointSize = (aSel > 0.5 ? 17.0 : 9.0) * uDpr;
       }`,
     fragmentShader: /* glsl */ `
@@ -41,7 +45,7 @@ export function createStops(scene, transit, heightAt) {
         #include <colorspace_fragment>
       }`,
     transparent: true,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
   });
   const points = new THREE.Points(geo, mat);

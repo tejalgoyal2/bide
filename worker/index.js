@@ -81,7 +81,7 @@ const unescape = (t) => t
   .replace(/&ndash;|&mdash;/g, '–').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
   .replace(/\s+/g, ' ').trim();
 async function readFeed([source, feed]) {
-  const res = await fetch(feed, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; bide; +https://bide.itejalgoyal.workers.dev)' }, signal: AbortSignal.timeout(6000), cf: { cacheTtl: 600 } });
+  const res = await fetch(feed, { headers: { 'user-agent': 'Mozilla/5.0 (compatible; bide; +https://bide.tgoyal.me)' }, signal: AbortSignal.timeout(6000), cf: { cacheTtl: 600 } });
   if (!res.ok) throw new Error(res.status);
   const xml = await res.text();
   const tag = (item, t) => (item.match(new RegExp(`<${t}[^>]*>([\\s\\S]*?)</${t}>`)) || [])[1] || '';
@@ -409,6 +409,13 @@ export class Recorder extends DurableObject {
     };
   }
 
+  // The last few vehicle snapshots (gzipped, framed like export), so the map
+  // can play buses back smoothly from the moment it opens.
+  recent(n) {
+    const rows = this.sql.exec('SELECT ts, z FROM vp ORDER BY ts DESC LIMIT ?', n).toArray().reverse();
+    return frame(rows);
+  }
+
   // Raw gzipped snapshots between two feed timestamps, framed as
   // [u32 ts][u32 length][bytes] so a client can split them without parsing.
   export(table, from, to) {
@@ -416,19 +423,24 @@ export class Recorder extends DurableObject {
     const rows = this.sql
       .exec(`SELECT ts, z FROM ${table} WHERE ts >= ? AND ts < ? ORDER BY ts LIMIT 2000`, from, to)
       .toArray();
-    let size = 0;
-    for (const r of rows) size += 8 + r.z.byteLength;
-    const out = new Uint8Array(size);
-    const dv = new DataView(out.buffer);
-    let p = 0;
-    for (const r of rows) {
-      dv.setUint32(p, r.ts);
-      dv.setUint32(p + 4, r.z.byteLength);
-      out.set(new Uint8Array(r.z), p + 8);
-      p += 8 + r.z.byteLength;
-    }
-    return out;
+    return frame(rows);
   }
+}
+
+// Snapshots framed as [u32 ts][u32 length][bytes].
+function frame(rows) {
+  let size = 0;
+  for (const r of rows) size += 8 + r.z.byteLength;
+  const out = new Uint8Array(size);
+  const dv = new DataView(out.buffer);
+  let p = 0;
+  for (const r of rows) {
+    dv.setUint32(p, r.ts);
+    dv.setUint32(p + 4, r.z.byteLength);
+    out.set(new Uint8Array(r.z), p + 8);
+    p += 8 + r.z.byteLength;
+  }
+  return out;
 }
 
 const json = (data, maxAge = 0) =>
@@ -439,6 +451,10 @@ const json = (data, maxAge = 0) =>
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    // One public address: the old workers.dev link forwards to bide.tgoyal.me.
+    if (url.hostname.endsWith('.workers.dev') && !url.pathname.startsWith('/api/')) {
+      return Response.redirect('https://bide.tgoyal.me' + url.pathname + url.search, 301);
+    }
     const rec = env.RECORDER.get(env.RECORDER.idFromName('victoria'));
 
     if (url.pathname === '/api/live') {
@@ -450,6 +466,12 @@ export default {
           'cache-control': 'public, max-age=5',
           'x-feed-ts': String(live.ts),
         },
+      });
+    }
+
+    if (url.pathname === '/api/recent') {
+      return new Response(await rec.recent(5), {
+        headers: { 'content-type': 'application/octet-stream', 'cache-control': 'public, max-age=10' },
       });
     }
 
@@ -497,7 +519,7 @@ export default {
       let list = [], ok = true;
       try {
         const res = await fetch('https://www.bchydro.com/power-outages/app/outages-map-data.json', {
-          headers: { 'user-agent': 'bide (https://bide.itejalgoyal.workers.dev)', accept: 'application/json' },
+          headers: { 'user-agent': 'bide (https://bide.tgoyal.me)', accept: 'application/json' },
           signal: AbortSignal.timeout(8000),
         });
         if (!res.ok) throw new Error(res.status);

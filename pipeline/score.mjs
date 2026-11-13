@@ -20,7 +20,7 @@ import zlib from 'node:zlib';
 import { decodeVehicles } from '../shared/gtfsrt.js';
 import { bideAt, featuresAt, plusAt, LEAD_BANDS, band, blendParams } from '../shared/model.js';
 
-const URL_BASE = process.env.BIDE_URL || 'https://bide.itejalgoyal.workers.dev';
+const URL_BASE = process.env.BIDE_URL || 'https://bide.tgoyal.me';
 const KEY = process.env.BIDE_KEY;
 const TZ = 'America/Vancouver';
 const args = Object.fromEntries(

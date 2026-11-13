@@ -1,12 +1,18 @@
-// Live buses. Each report is snapped onto its route's shape, and between
-// reports the bus keeps rolling at its recent speed, so it glides rather than
-// jumping every fifteen seconds. Each is drawn as a small 3D bus.
+// Live buses. Each bus reports its position about every 17 s (measured:
+// p50 17 s, p90 31 s). Rather than guessing ahead of the last report, which
+// overshoots stops and then snaps back, each bus is played back along its own
+// route shape toward its latest known position, paced to arrive about when
+// the next report is due, with bus-like acceleration and braking. So a bus is
+// shown roughly one report behind real time, but it never runs past where it
+// has really been, never reverses, and never jumps. Each is a small 3D bus.
 import * as THREE from 'three';
 import { decodeVehicles } from '../../shared/gtfsrt.js';
 import { toXY } from '../../shared/geo.js';
 import { shared, CORE_C, CORE_R } from './world.js';
 
 const MAX = 400;
+const ACCEL = 1.1, BRAKE = 0.9, DECEL = 2.5, VMAX = 22; // m/s², m/s
+const LIFE = 14; // a bus drawn at life size, metres (BC Transit's are 12 to 13 m)
 const OCC = ['Empty', 'Many seats', 'Few seats', 'Standing room', 'Crushed standing', 'Full', 'Not accepting passengers'];
 const OCC_COLOR = ['#3f9b8f', '#3f9b8f', '#e2a03f', '#d9643f', '#9c3d6b', '#9c3d6b', '#9c3d6b'];
 
@@ -88,20 +94,33 @@ const BUS_VERT = /* glsl */ `
   void main() {
     vec3 dir = vec3(cos(iHead), 0.0, -sin(iHead)), side = vec3(sin(iHead), 0.0, cos(iHead));
     float L = iPos.w;
-    vec3 dim = vec3(L, L * 0.26, L * 0.3); // a touch broader than life, so the roof arrow reads
+    // Life-size proportions up close; when zoomed out the bus keeps a
+    // minimum size on screen but doesn't grow taller than a low block.
+    vec3 dim = vec3(L, min(L * 0.26, 3.6 + (L - 14.0) * 0.07), L * 0.3);
     vL = position;
     vec3 w = iPos.xyz + dir * position.x * dim.x + vec3(0.0, (position.y + 0.5) * dim.y, 0.0) + side * position.z * dim.z;
     vN = dir * normal.x + vec3(0.0, normal.y, 0.0) + side * normal.z;
     vW = w; vCol = iCol;
-    gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+    // Depth-tested against the city, nudged a few metres toward the camera
+    // so it sits on the road surface instead of sinking into it.
+    vec4 mv = viewMatrix * vec4(w, 1.0);
+    float d = length(mv.xyz);
+    mv.xyz *= max(0.0, 1.0 - (4.0 + d * 0.006) / d);
+    gl_Position = projectionMatrix * mv;
   }`;
 const BUS_FRAG = /* glsl */ `
   uniform vec3 uSun, uSunColor, uAmbient;
-  uniform float uNight;
+  uniform float uNight, uGhost;
   varying vec3 vL, vN, vW;
   varying vec4 vCol;
   void main() {
     vec3 n = normalize(vN), c = vCol.rgb;
+    if (uGhost > 0.5) {
+      // Behind a building: a faint flat silhouette, so it isn't lost.
+      gl_FragColor = vec4(mix(c, vec3(1.0), 0.25), vCol.a * 0.42);
+      #include <colorspace_fragment>
+      return;
+    }
     vec3 an = abs(vL) * 2.0; // 1 on the faces
     bool roof = vL.y > 0.49, front = vL.x > 0.49, back = vL.x < -0.49, sideF = abs(vL.z) > 0.49;
     vec3 glass = mix(vec3(0.16, 0.2, 0.26), vec3(1.0, 0.86, 0.6), uNight * 0.85);
@@ -146,7 +165,10 @@ const PAD_VERT = /* glsl */ `
     vP = position.xz * 2.0;
     vec3 w = iPos.xyz + (dir * position.x + side * position.z) * iPos.w * 1.6;
     vInfo = iInfo;
-    gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+    vec4 mv = viewMatrix * vec4(w, 1.0);
+    float d = length(mv.xyz);
+    mv.xyz *= max(0.0, 1.0 - (4.0 + d * 0.006) / d);
+    gl_Position = projectionMatrix * mv;
   }`;
 const PAD_FRAG = /* glsl */ `
   uniform float uTime, uNight;
@@ -185,7 +207,7 @@ export function createBuses(scene, transit, world, tagLayer) {
     return shapeCache.get(i);
   };
   let trips = null;
-  fetch('/data/trips.json').then((r) => r.json()).then((t) => (trips = t));
+  const tripsReady = fetch('/data/trips.json').then((r) => r.json()).then((t) => (trips = t)).catch(() => {});
 
   const buses = new Map();
   let delays = {};
@@ -204,16 +226,28 @@ export function createBuses(scene, transit, world, tagLayer) {
   busGeo.setAttribute('iPos', iPos);
   busGeo.setAttribute('iCol', iCol);
   busGeo.setAttribute('iHead', iHead);
-  const busMat = new THREE.ShaderMaterial({
-    uniforms: { uSun: shared.uSun, uSunColor: shared.uSunColor, uAmbient: shared.uAmbient, uNight: shared.uNight },
+  const busUniforms = { uSun: shared.uSun, uSunColor: shared.uSunColor, uAmbient: shared.uAmbient, uNight: shared.uNight };
+  // Drawn twice: a faint silhouette that shows through buildings, then the
+  // real bus, depth-tested so towers and hills stand in front of it.
+  const ghostMat = new THREE.ShaderMaterial({
+    uniforms: { ...busUniforms, uGhost: { value: 1 } },
     vertexShader: BUS_VERT,
     fragmentShader: BUS_FRAG,
     transparent: true,
-    // Buses are the point of the map: always drawn, never lost behind a
-    // hill or a tower. Each box still shades itself correctly.
     depthTest: false,
     depthWrite: false,
   });
+  const busMat = new THREE.ShaderMaterial({
+    uniforms: { ...busUniforms, uGhost: { value: 0 } },
+    vertexShader: BUS_VERT,
+    fragmentShader: BUS_FRAG,
+    transparent: true,
+    depthTest: true,
+    depthWrite: true,
+  });
+  const ghosts = new THREE.Mesh(busGeo, ghostMat);
+  ghosts.frustumCulled = false;
+  ghosts.renderOrder = 29;
   const models = new THREE.Mesh(busGeo, busMat);
   models.frustumCulled = false;
   models.renderOrder = 30;
@@ -232,13 +266,13 @@ export function createBuses(scene, transit, world, tagLayer) {
     vertexShader: PAD_VERT,
     fragmentShader: PAD_FRAG,
     transparent: true,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
     side: THREE.DoubleSide,
   }));
   pads.frustumCulled = false;
   pads.renderOrder = 17;
-  scene.add(pads, models);
+  scene.add(pads, ghosts, models);
   let selectedBus = null;
 
   // Route-number tags, shown when close enough to read them.
@@ -261,6 +295,25 @@ export function createBuses(scene, transit, world, tagLayer) {
       console.warn('live feed', e);
     }
   }
+  // On open, replay the last minute of reports, so buses are already moving
+  // along their routes in the first frame instead of waiting for a second report.
+  async function seed() {
+    try {
+      const res = await fetch('/api/recent');
+      if (!res.ok) return;
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const dv = new DataView(buf.buffer);
+      for (let p = 0; p + 8 <= buf.length;) {
+        const n = dv.getUint32(p + 4);
+        const z = buf.subarray(p + 8, p + 8 + n);
+        p += 8 + n;
+        const raw = await new Response(new Blob([z]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+        ingest(decodeVehicles(new Uint8Array(raw)), true);
+      }
+    } catch (e) {
+      console.warn('recent feed', e);
+    }
+  }
   async function pollDelays() {
     try {
       const r = await fetch('/api/delays');
@@ -268,10 +321,14 @@ export function createBuses(scene, transit, world, tagLayer) {
     } catch { /* lateness view just shows grey */ }
   }
 
-  function ingest(feed) {
-    if (feed.ts === feedTs) return;
+  const clock = () => performance.now() / 1000;
+
+  // A new report for each bus becomes its next target. `seeding` replays
+  // history: the bus is placed at its previous report, heading for the latest.
+  function ingest(feed, seeding = false) {
+    if (feed.ts <= feedTs) return;
     feedTs = feed.ts;
-    const now = Date.now() / 1000;
+    const now = Date.now() / 1000, rx = clock();
     for (const v of feed.vehicles) {
       if (!v.lat) continue;
       const [x, y] = toXY(v.lon, v.lat);
@@ -280,12 +337,13 @@ export function createBuses(scene, transit, world, tagLayer) {
         const t = trips?.[v.tripId];
         const shapeIdx = t ? t[1] : -1;
         b = {
-          ...(b || { x, y, alpha: 0, heading: 0 }),
           id: v.id, tripId: v.tripId, shapeIdx,
+          x: b ? b.x : x, y: b ? b.y : y, tx: x, ty: y, alpha: b ? b.alpha : 0, heading: b ? b.heading : 0,
           route: t ? t[0] : routeById.get(v.routeId) ?? -1,
           headsign: t ? transit.headsigns[t[3]] : '',
           shape: shapeIdx >= 0 ? getShape(shapeIdx) : null,
-          s: null, sRep: null, v: 0, repTs: 0,
+          s: null, tgt: null, lastS: null, v: 0, vReal: 6, gap: 17, lastTs: 0, rxAt: rx,
+          back: 0, snap: null, hop: !!b, // a bus starting a new trip fades across
         };
         buses.set(v.id, b);
       }
@@ -294,29 +352,80 @@ export function createBuses(scene, transit, world, tagLayer) {
         b.shapeIdx = t[1]; b.shape = getShape(t[1]); b.route = t[0]; b.headsign = transit.headsigns[t[3]];
       }
       b.occ = v.occ; b.status = v.status; b.seq = v.seq; b.stopId = v.stopId; b.speed = v.speed;
-      b.seen = now; b.vts = v.ts; b.rx = x; b.ry = y;
-      b.dying = false;
+      b.seen = now; b.dying = false;
+      if (v.ts <= b.lastTs) continue; // the same report again
+      const dtRep = b.lastTs ? v.ts - b.lastTs : 0;
+      if (dtRep > 0 && dtRep < 120) b.gap = b.gap * 0.7 + Math.min(45, Math.max(8, dtRep)) * 0.3;
+      b.lastTs = b.vts = v.ts;
+      b.rxAt = rx;
+      b.rx = x; b.ry = y;
+      const prevT = b.tgt;
       if (b.shape) {
-        const pr = project(b.shape, x, y, b.sRep);
-        if (pr.off > 250) { b.offShape = true; continue; }
-        b.offShape = false;
-        if (b.sRep != null && v.ts > b.repTs) {
-          const est = (pr.s - b.sRep) / (v.ts - b.repTs);
-          if (est >= 0 && est < 30) b.v = b.v * 0.4 + est * 0.6;
+        const pr = project(b.shape, x, y, b.lastS ?? b.s);
+        if (pr.off > 250) { // off its route (a detour): head straight for the report
+          b.offShape = true;
+          if (b.hop) { b.hop = false; b.x = x; b.y = y; b.alpha = 0; }
+          if (seeding) { b.x = b.tx; b.y = b.ty; }
+          b.tx = x; b.ty = y;
+          continue;
         }
-        if (v.speed === 0 || v.status === 1) b.v *= 0.25;
-        b.sRep = pr.s;
-        b.repTs = v.ts;
-        if (b.s == null) b.s = pr.s;
+        if (b.offShape) { b.offShape = false; b.s = b.tgt = pr.s; b.v = 0; }
+        if (b.lastS != null && dtRep > 0) {
+          const est = (pr.s - b.lastS) / dtRep;
+          if (est > -2 && est < 30) b.vReal = b.vReal * 0.5 + Math.max(0, est) * 0.5;
+        }
+        b.lastS = pr.s;
+        if (b.hop) { // a new trip: fade out where it is, in at the new spot
+          b.hop = false;
+          b.snap = b.tgt = pr.s;
+          continue;
+        }
+        if (b.s == null) { b.s = b.tgt = pr.s; continue; } // first sighting: it fades in here
+        if (pr.s > b.tgt + 3000 || dtRep > 300) { b.snap = b.tgt = pr.s; continue; }
+        if (pr.s < b.tgt - 60) {
+          // Reported behind where it was: GPS noise, or a loop matched to the
+          // wrong pass. Hold still; only if it persists, fade across.
+          if (++b.back >= 2 && pr.s < b.s - 250) { b.snap = b.tgt = pr.s; b.back = 0; }
+          continue;
+        }
+        b.back = 0;
+        b.tgt = Math.max(b.tgt, pr.s);
+        if (seeding && prevT != null) { b.s = prevT; b.v = Math.min(b.vReal, VMAX); }
+      } else {
+        if (b.hop) { b.hop = false; b.x = x; b.y = y; b.alpha = 0; }
+        if (seeding) { b.x = b.tx; b.y = b.ty; }
+        b.tx = x; b.ty = y;
       }
     }
     for (const b of buses.values()) if (now - b.seen > 240) b.dying = true;
   }
 
-  poll();
+  tripsReady.then(seed).then(() => {
+    poll();
+    setInterval(poll, 10000);
+  });
   pollDelays();
-  setInterval(poll, 10000);
   setInterval(pollDelays, 30000);
+
+  // Ease the heading toward a direction, turning no faster than a bus could.
+  function turn(b, hx, hy, dt) {
+    if (!hx && !hy) return;
+    const want = Math.atan2(hy, hx);
+    if (!b.headingSet) { b.heading = want; b.headingSet = true; return; }
+    const d = Math.atan2(Math.sin(want - b.heading), Math.cos(want - b.heading));
+    b.heading += d * (1 - Math.exp(-dt * 7));
+  }
+
+  // One frame of motion along the route: pace to reach the latest report a
+  // little after the next one is due, brake smoothly into it, never pass it.
+  function drive(b, dt, rem) {
+    const tl = Math.max(0.5, b.rxAt + b.gap * 1.35 - clock());
+    let want = rem / tl;
+    want = Math.min(want, VMAX, Math.sqrt(2 * BRAKE * Math.max(0, rem)), Math.max(b.vReal * 1.5, 4, rem / 25));
+    const dv = want - b.v;
+    b.v += dv > 0 ? Math.min(dv, ACCEL * dt) : Math.max(dv, -DECEL * dt);
+    return Math.min(rem, Math.max(0, b.v * dt));
+  }
 
   const col = new THREE.Color(), haze = new THREE.Color(), tmp = {}, tp = {};
   const v3 = new THREE.Vector3(), v4 = new THREE.Vector3();
@@ -357,7 +466,10 @@ export function createBuses(scene, transit, world, tagLayer) {
     const now = Date.now() / 1000;
     if ((bunchT += dt) > 1) { bunchT = 0; findBunches(); }
     // Smallest on-screen length of a bus, in pixels; life-size wins up close.
-    const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 1200, 18, 40), 18, 40);
+    // Far out, a bus keeps 18 to 26 px on screen so the network reads; closer
+    // in it shrinks toward life size, so it fits its street between buildings.
+    const near = THREE.MathUtils.smoothstep(dist, 700, 2600);
+    const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 2600, 18, 26), 18, 26) * (0.7 + 0.3 * near);
     haze.copy(shared.uHaze.value);
     list.length = 0;
     let i = 0, tagN = 0;
@@ -365,27 +477,30 @@ export function createBuses(scene, transit, world, tagLayer) {
     const W = innerWidth, H = innerHeight;
     const tNow = performance.now() / 1000;
     for (const [id, b] of buses) {
-      b.alpha += ((b.dying ? 0 : 1) - b.alpha) * (1 - Math.exp(-dt * 2));
+      b.alpha += ((b.dying || b.snap != null ? 0 : 1) - b.alpha) * (1 - Math.exp(-dt * (b.snap != null ? 5 : 2)));
       if (b.dying && b.alpha < 0.02) { buses.delete(id); continue; }
-      const onShape = b.shape && b.s != null && !b.offShape;
+      if (b.snap != null && b.alpha < 0.04) { b.s = b.tgt = b.snap; b.snap = null; b.v = 0; b.headingSet = false; b.x = b.tx; b.y = b.ty; }
+      const onShape = b.shape && b.s != null && !b.offShape && b.snap == null;
+      const L = Math.max(LIFE, px * mpp) * (0.6 + 0.4 * Math.min(1, b.alpha * 1.5));
       if (onShape) {
-        const ahead = Math.min(45, Math.max(0, now - b.repTs));
-        const pred = Math.min(b.shape.len, b.sRep + b.v * ahead);
-        if (pred < b.s - 200 || pred > b.s + 1500) b.s = pred;
-        else if (pred > b.s) b.s += (pred - b.s) * (1 - Math.exp(-dt * 1.2));
-        // Head along the road a little ahead, so corners are taken smoothly.
+        b.s += drive(b, dt, b.tgt - b.s);
         pointAt(b.shape, b.s, tmp);
         b.x = tmp.x; b.y = tmp.y;
-        pointAt(b.shape, Math.min(b.shape.len, b.s + 12), tp);
-        const hx = tp.x - b.x, hy = tp.y - b.y;
-        if (hx || hy) {
-          let d = Math.atan2(hy, hx) - b.heading;
-          d = Math.atan2(Math.sin(d), Math.cos(d));
-          b.heading += d * (1 - Math.exp(-dt * 6));
+        // Point the body along the road under it, front to back, so it
+        // swings through corners the way a real bus does.
+        const c = Math.min(10, L * 0.45);
+        pointAt(b.shape, Math.max(0, b.s - c), tp);
+        const ax = tp.x, ay = tp.y;
+        pointAt(b.shape, Math.min(b.shape.len, b.s + c), tp);
+        turn(b, tp.x - ax, tp.y - ay, dt);
+      } else if (b.snap == null) {
+        const dx = b.tx - b.x, dy = b.ty - b.y, rem = Math.hypot(dx, dy);
+        if (rem > 2500) { b.x = b.tx; b.y = b.ty; b.v = 0; }
+        else if (rem > 0.01) {
+          const step = drive(b, dt, rem);
+          b.x += (dx / rem) * step; b.y += (dy / rem) * step;
+          if (rem > 3) turn(b, dx, dy, dt);
         }
-      } else {
-        b.x += (b.rx - b.x) * (1 - Math.exp(-dt * 1.5));
-        b.y += (b.ry - b.y) * (1 - Math.exp(-dt * 1.5));
       }
       // Buses heading out to Langford or Sidney dissolve into the haze.
       const r = Math.hypot((b.x - CORE_C.x) / CORE_R.x, (-b.y - CORE_C.y) / CORE_R.y);
@@ -394,16 +509,15 @@ export function createBuses(scene, transit, world, tagLayer) {
       if (vis < 0.03 || i >= MAX) continue;
       const gy = world.surfaceY(b.x, b.y);
       colorFor(b, col).lerp(haze, fade * 0.8);
-      const L = Math.max(12, px * mpp) * (0.6 + 0.4 * vis);
-      const stopped = b.status === 1 || (b.speed === 0 && b.v < 0.5);
-      iPos.setXYZW(i, b.x, gy + 3 + L * 0.05, -b.y, L); // the drawn terrain sits a little above the sampled height
+      // Waiting at a stop: it has caught up with a report that says so.
+      const stopped = b.v < 0.4 && (b.status === 1 || b.speed === 0) && (!onShape || b.tgt - b.s < 4);
+      iPos.setXYZW(i, b.x, gy + 0.5, -b.y, L); // on the road; the shader's depth nudge keeps it above the terrain mesh
       iCol.setXYZW(i, col.r, col.g, col.b, vis);
       iHead.setX(i, b.heading);
       pPos.setXYZW(i, b.x, gy + 0.6, -b.y, L);
       pInfo.setXYZW(i, b.heading, stopped ? tNow / 2.4 + (b.id.length % 7) * 0.13 : -1, b === selectedBus ? 1 : bunched.has(b) ? 2 : 0, vis);
-      v3.set(b.x, gy + L * 0.45, -b.y).project(camera);
-
-      b.screen = new THREE.Vector3(b.x, gy, -b.y);
+      v3.set(b.x, gy + Math.min(L * 0.26, 3.6 + (L - LIFE) * 0.07) + 2, -b.y).project(camera);
+      (b.screen ||= new THREE.Vector3()).set(b.x, gy, -b.y);
       if (showTags && tagN < 120) {
         if (v3.z < 1 && Math.abs(v3.x) < 1.05 && Math.abs(v3.y) < 1.05) {
           const t = tagFor(tagN++);

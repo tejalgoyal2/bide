@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { BOUNDS, CORE, toXY } from '../../shared/geo.js';
 import { HAZE_GLSL, NOISE_GLSL } from './shaders.js';
 
+const LAND_SEG = 60; // land mesh spacing, metres
 export const EXAG = 1.7; // hills are drawn a little taller than life
 const [X0, Y0] = toXY(BOUNDS.west, BOUNDS.south);
 const [X1, Y1] = toXY(BOUNDS.east, BOUNDS.north);
@@ -200,8 +201,19 @@ export async function createWorld(scene, map) {
     const at = (a, b) => H.h[Math.min(H.H - 1, b) * H.W + Math.min(H.W - 1, a)];
     return (at(i, j) * (1 - fx) + at(i + 1, j) * fx) * (1 - fy) + (at(i, j + 1) * (1 - fx) + at(i + 1, j + 1) * fx) * fy;
   };
-  // Height of the drawn surface at a map point, as the shaders compute it.
-  const surfaceY = (x, y) => heightAt(x, y) * EXAG * shared.uRise.value;
+  // Height of the drawn surface at a map point. The land mesh has a vertex
+  // every 60 m and is flat between them, so on a convex street it sits
+  // metres off the true height: interpolate between the mesh's own corners,
+  // or buses and pins sink into (or float over) the ground they're on.
+  const LAND_NX = Math.round(EXTENT.w / LAND_SEG), LAND_NY = Math.round(EXTENT.h / LAND_SEG);
+  const cellX = EXTENT.w / LAND_NX, cellY = EXTENT.h / LAND_NY;
+  const meshHeight = (x, y) => {
+    const gx = (x - EXTENT.x0) / cellX, gy = (y - EXTENT.y0) / cellY;
+    const i = Math.floor(gx), j = Math.floor(gy), fx = gx - i, fy = gy - j;
+    const h = (a, b) => heightAt(EXTENT.x0 + a * cellX, EXTENT.y0 + b * cellY);
+    return (h(i, j) * (1 - fx) + h(i + 1, j) * fx) * (1 - fy) + (h(i, j + 1) * (1 - fx) + h(i + 1, j + 1) * fx) * fy;
+  };
+  const surfaceY = (x, y) => meshHeight(x, y) * EXAG * shared.uRise.value;
 
   const half = new Uint16Array(H.h.length);
   for (let i = 0; i < half.length; i++) half[i] = THREE.DataUtils.toHalfFloat(H.h[i]);
@@ -299,8 +311,7 @@ export async function createWorld(scene, map) {
   group.add(sea);
 
   // --- land ------------------------------------------------------------
-  const SEG = 60;
-  const nx = Math.round(EXTENT.w / SEG), ny = Math.round(EXTENT.h / SEG);
+  const nx = LAND_NX, ny = LAND_NY;
   const landGeo = new THREE.PlaneGeometry(EXTENT.w, EXTENT.h, nx, ny).rotateX(-Math.PI / 2);
   landGeo.translate(EXTENT.x0 + EXTENT.w / 2, 0, -(EXTENT.y0 + EXTENT.h / 2));
   const landMat = new THREE.ShaderMaterial({
@@ -371,7 +382,7 @@ export async function createWorld(scene, map) {
 
   group.add(buildRoads(map));
 
-  return { group, heightAt, surfaceY, mapCanvas };
+  return { group, heightAt, meshHeight, surfaceY, mapCanvas };
 }
 
 // Roads are ribbons whose width never drops below a pixel or two, so the
