@@ -161,9 +161,16 @@ const PAD_FRAG = /* glsl */ `
       float ring = (1.0 - smoothstep(0.0, 0.05, abs(r - (0.3 + t * 0.65)))) * (1.0 - t);
       col = mix(col, vec3(1.0, 0.97, 0.9), ring); a = max(a, ring * 0.6);
     }
-    if (vInfo.z > 0.5) {
+    if (vInfo.z > 0.5 && vInfo.z < 1.5) {
       float ring = 1.0 - smoothstep(0.0, 0.035, abs(r - 0.82 - 0.03 * sin(uTime * 4.0)));
       col = mix(col, vec3(1.0), ring); a = max(a, ring * 0.95);
+    }
+    if (vInfo.z > 1.5) {
+      // Bunched: a dashed amber ring that turns slowly.
+      float ang = atan(vP.y, vP.x);
+      float dash = step(0.5, fract(ang * 3.0 / 3.1416 + uTime * 0.3));
+      float ring = (1.0 - smoothstep(0.0, 0.05, abs(r - 0.8))) * dash;
+      col = mix(col, vec3(0.98, 0.66, 0.2), ring); a = max(a, ring * 0.9);
     }
     gl_FragColor = vec4(col, a * vInfo.w);
     #include <colorspace_fragment>
@@ -321,8 +328,34 @@ export function createBuses(scene, transit, world, tagLayer) {
     return out.set(routes[b.route]?.color || '#7d8a99');
   }
 
+  // Bunching: two buses on the same route pattern within 350 m of each
+  // other along it, away from the ends of the line (where buses lay over).
+  // Checked once a second.
+  const bunched = new Map(); // bus -> the bus it's bunched with
+  let pairs = [], bunchT = 0;
+  function findBunches() {
+    bunched.clear(); pairs = [];
+    const byShape = new Map();
+    for (const b of buses.values()) {
+      if (b.dying || !b.shape || b.s == null || b.offShape) continue;
+      if (b.s < 400 || b.s > b.shape.len - 400) continue;
+      (byShape.get(b.shapeIdx) || byShape.set(b.shapeIdx, []).get(b.shapeIdx)).push(b);
+    }
+    for (const list of byShape.values()) {
+      list.sort((a, c) => a.s - c.s);
+      for (let k = 1; k < list.length; k++) {
+        const a = list[k - 1], c = list[k];
+        if (c.s - a.s < 350 && !bunched.has(a) && !bunched.has(c)) {
+          bunched.set(a, c); bunched.set(c, a);
+          pairs.push([c, a, Math.round(c.s - a.s)]); // leader, follower, gap (m)
+        }
+      }
+    }
+  }
+
   function update(dt, mpp, camera, dist) {
     const now = Date.now() / 1000;
+    if ((bunchT += dt) > 1) { bunchT = 0; findBunches(); }
     // Smallest on-screen length of a bus, in pixels; life-size wins up close.
     const px = THREE.MathUtils.clamp(THREE.MathUtils.mapLinear(dist, 9000, 1200, 18, 40), 18, 40);
     haze.copy(shared.uHaze.value);
@@ -367,7 +400,7 @@ export function createBuses(scene, transit, world, tagLayer) {
       iCol.setXYZW(i, col.r, col.g, col.b, vis);
       iHead.setX(i, b.heading);
       pPos.setXYZW(i, b.x, gy + 0.6, -b.y, L);
-      pInfo.setXYZW(i, b.heading, stopped ? tNow / 2.4 + (b.id.length % 7) * 0.13 : -1, b === selectedBus ? 1 : 0, vis);
+      pInfo.setXYZW(i, b.heading, stopped ? tNow / 2.4 + (b.id.length % 7) * 0.13 : -1, b === selectedBus ? 1 : bunched.has(b) ? 2 : 0, vis);
       v3.set(b.x, gy + L * 0.45, -b.y).project(camera);
 
       b.screen = new THREE.Vector3(b.x, gy, -b.y);
@@ -397,8 +430,12 @@ export function createBuses(scene, transit, world, tagLayer) {
     routes,
     setMode: (m) => (mode = m),
     setSelected: (b) => (selectedBus = b),
+    get bunches() { return pairs; },
+    bunchedWith: (b) => bunched.get(b),
     get mode() { return mode; },
     delayOf: (b) => delays[b.tripId],
+    // [route index, shape index, direction, headsign index] for a trip id.
+    tripInfo: (id) => trips?.[id],
     get feedTs() { return feedTs; },
     stats() {
       let n = 0, standing = 0, late = 0, withDelay = 0, sum = 0;

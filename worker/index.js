@@ -7,7 +7,7 @@ const FEED = 'https://bct.tmix.se/gtfs-realtime/';
 const GTFS = 'https://bct.tmix.se/Tmix.Cap.TdExport.WebApi/gtfs/?operatorIds=48';
 const OP = '?operatorIds=48';
 
-const CODE_VERSION = 8;
+const CODE_VERSION = 9;
 const TICK = 10_000; // vehicle feed refreshes about every 15 s
 const TRIP_EVERY = 60_000;
 const ALERT_EVERY = 300_000;
@@ -249,7 +249,7 @@ export class Recorder extends DurableObject {
 
   // The next few stops of one trip: BC Transit's prediction beside bide's and
   // bide+'s, worked out now with the latest fitted settings.
-  trip(id, p) {
+  trip(id, p, max = 6) {
     const t = this.tu?.byTrip.get(id);
     if (!t) return null;
     const now = Date.now() / 1000, off = this.clockOffset(now);
@@ -259,7 +259,7 @@ export class Recorder extends DurableObject {
     let nq = Infinity;
     for (const [q, v] of sm) if (q > pj && q < nq) { nq = q; nS = v; }
     const stops = [];
-    for (let i = 0; i < t.stops.length && stops.length < 6; i += 3) {
+    for (let i = 0; i < t.stops.length && stops.length < max; i += 3) {
       const q = t.stops[i], official = t.stops[i + 1] + off, s = t.stops[i + 1] - t.stops[i + 2] + off;
       if (q <= pj || !t.stops[i + 1] || official < now - 60) continue;
       // official is what riders are shown, clock fault and all.
@@ -267,6 +267,22 @@ export class Recorder extends DurableObject {
       stops.push({ seq: q, id: t.ids[i / 3] || '', official: t.stops[i + 1], sched: Math.round(s), bide: Math.round(bide), plus: Math.round(plusAt(now, official, bide, s, p)) });
     }
     return { now: Math.round(now), feed: this.tu.ts, off, passed: pj >= 0 ? { seq: pj, at: Math.round(pass.A), delay: Math.round(pass.A - pS - off) } : null, stops };
+  }
+
+  // A stop's departures board: every trip still due at this stop, soonest
+  // first, with BC Transit's time beside bide's and bide+'s.
+  stop(stopId, p) {
+    if (!this.tu) return null;
+    const now = Date.now() / 1000, rows = [];
+    for (const [tripId, t] of this.tu.byTrip) {
+      if (!t.ids.includes(stopId)) continue;
+      const r = this.trip(tripId, p, 200);
+      const s = r?.stops.find((x) => x.id === stopId);
+      if (!s || s.official - now > 75 * 60) continue;
+      rows.push({ trip: tripId, route: t.routeId, official: s.official, bide: s.bide, plus: s.plus, sched: s.sched, seen: !!r.passed });
+    }
+    rows.sort((a, b) => a.plus - b.plus);
+    return { now: Math.round(now), off: this.clockOffset(now), rows: rows.slice(0, 10) };
   }
 
   async prune() {
@@ -444,6 +460,14 @@ export default {
       const p = await latestParams(env);
       const out = await rec.trip(id, p);
       return json(out && { ...out, model: { from: p.date, best: p.best, mae: p.mae } }, 10);
+    }
+
+    if (url.pathname === '/api/stop') {
+      const id = url.searchParams.get('id') || '';
+      if (!/^[\w.-]{1,20}$/.test(id)) return new Response('bad id', { status: 400 });
+      const p = await latestParams(env);
+      const out = await rec.stop(id, p);
+      return json(out && { ...out, model: { from: p.date, best: p.best } }, 15);
     }
 
     if (url.pathname === '/api/delays') {

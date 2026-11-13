@@ -17,6 +17,7 @@ import { createFocus } from './focus.js';
 import { createStreets } from './streets.js';
 import { createNews } from './news.js';
 import { createEggs } from './eggs.js';
+import { createStops } from './stops.js';
 
 const $ = (id) => document.getElementById(id);
 document.body.classList.add('loading');
@@ -49,6 +50,7 @@ const focus = createFocus(scene, world, $('pins'));
 const streets = createStreets($('streets'), world.surfaceY);
 const news = createNews($('news-pins'), $('news-ticker'), world.surfaceY);
 const eggs = createEggs(scene, $('eggs'), world.surfaceY);
+const stops = createStops(scene, transit, world.heightAt);
 const quakes = createQuakes(scene, world.surfaceY, (list) => {
   const day = list.filter((q) => Date.now() - q.time < 86400e3).length;
   $('n-quake').textContent = list.length ? ` · ${day ? `${day} today` : `${list.length} this week`}` : ' · quiet week';
@@ -149,6 +151,7 @@ $('t-bldg').onchange = (e) => buildings.setEnabled(e.target.checked);
 $('t-wind').onchange = (e) => wind.setEnabled(e.target.checked);
 $('t-quake').onchange = (e) => quakes.setEnabled(e.target.checked);
 $('t-streets').onchange = (e) => streets.setEnabled(e.target.checked);
+$('t-stops').onchange = (e) => { stops.setEnabled(e.target.checked); if (!e.target.checked) openStop(null); };
 $('t-news').onchange = (e) => news.setEnabled(e.target.checked);
 
 // Turning the map: buttons, a compass that points north (tap it to face
@@ -301,6 +304,23 @@ function chart(buckets, k) {
     <div class="key"><span><i class="bct"></i>BC Transit's own prediction</span><span><i class="us"></i>${k === 'bide' ? 'bide' : 'bide+'}</span></div>`;
 }
 
+// The routes BC Transit found hardest to predict that day, with bide's figure
+// beside it. Only routes with plenty of checks, so one odd trip can't top it.
+function routesHtml(d, k) {
+  const list = (d.byRoute || []).filter((r) => r.n >= 3000).sort((a, b) => b.official - a.official).slice(0, 6);
+  if (list.length < 3) return '';
+  const max = Math.max(...list.map((r) => Math.max(r.official, r[k])));
+  const routeBy = new Map(buses.routes.map((r) => [r.short, r]));
+  return `<h3 class="score-h">Hardest routes to predict</h3>
+    <ul class="routes">${list.map((r) => {
+      const rt = routeBy.get(r.route);
+      return `<li><span class="badge sm" style="background:${rt?.color ?? '#777'}">${esc(r.route)}</span>
+        <span class="rbar"><i class="bct" style="width:${(r.official / max) * 100}%"></i><i class="us" style="width:${(r[k] / max) * 100}%"></i></span>
+        <span class="rv">${short(r.official)} <em>${short(r[k])}</em></span></li>`;
+    }).join('')}</ul>
+    <p class="muted small">Average miss per route: grey BC Transit, coral ${k === 'bide' ? 'bide' : 'bide+'}. Routes with at least 3,000 checks.</p>`;
+}
+
 async function loadScores() {
   try {
     const days = await (await fetch('/api/scores')).json();
@@ -315,6 +335,12 @@ async function loadScores() {
     const label = { bide: 'bide', bidePlus: 'bide+' };
     const k = ['bide', 'bidePlus'].sort((a, b) => o[a].mae - o[b].mae)[0];
     const ahead = o[k].mae < o.official.mae * 0.99, behind = o[k].mae > o.official.mae * 1.01;
+    // The run of days: how often the better bide model beat BC Transit
+    // (clock-corrected where scored), over the days a model was trained for.
+    const fair = (x) => (x.overall.officialFixed || x.overall.official).mae;
+    const trained = days.filter((x) => x.params?.used?.from && x.params.used.from !== 'defaults').slice(0, 14);
+    const wins = trained.filter((x) => Math.min(x.overall.bide.mae, x.overall.bidePlus.mae) < fair(x) * 0.99).length;
+    const streak = trained.length >= 3 ? `<p class="streak"><b>${wins} of the last ${trained.length}</b> scored days, bide's better model was closer than BC Transit's own times (clock-corrected).</p>` : '';
     const stat = (name, v, cls) => `<div class="stat-big ${cls}"><span>${name}</span><b>${mmss(v.mae)}</b><small>average miss · within a minute ${Math.round(v.within60)}% of the time</small></div>`;
     const history = days.slice(0, 7).map((x) => {
       const kk = ['bide', 'bidePlus'].sort((a, b) => x.overall[a].mae - x.overall[b].mae)[0];
@@ -328,12 +354,14 @@ async function loadScores() {
           ? `BC Transit's own arrival times were closer, missing by <em>${mmss(o.official.mae)}</em> on average; ${label[k]} missed by ${mmss(o[k].mae)}.`
           : `${label[k]} and BC Transit finished level, both missing by about <em>${mmss(o.official.mae)}</em> on average.`}</p>
       <div class="stat-pair">${stat('BC Transit', o.official, 'bct')}${stat(label[k], o[k], 'us')}</div>
+      ${streak}
       ${d.feedClockOffset > 0.5
         ? `<p class="note">BC Transit's feed ran on the wrong clock that day, an hour out with no delays reported. bide spotted it from where the buses actually were and corrected for it.</p>`
         : d.feedClockOffset > 0.01 && o.officialFixed
           ? `<p class="note">For ${Math.max(1, Math.round(d.feedClockOffset * 100))}% of the day's updates BC Transit's feed was an hour out, which inflates its average. With its clock put right it would have missed by ${mmss(o.officialFixed.mae)}; ${label[k]} was ${o[k].mae < o.officialFixed.mae * 0.99 ? 'still closer' : o[k].mae > o.officialFixed.mae * 1.01 ? 'then behind' : 'then level'}.</p>`
           : ''}
       ${chart(d.buckets, k)}
+      ${routesHtml(d, k)}
       <h3 class="score-h">Every day so far</h3>
       <ul class="days">${history}</ul>
       <p class="muted small">${d.events.toLocaleString()} predictions checked against ${d.arrivals.toLocaleString()} real arrivals on ${d.trips.toLocaleString()} trips. A new day is scored every morning.</p>`;
@@ -472,7 +500,76 @@ function refreshCard() {
   renderTrip();
 }
 setInterval(refreshCard, 1000);
-controls.state.onTap = (x, y) => { if (!eggs.tap(x, y)) select(busAtScreen(x, y)); };
+controls.state.onTap = (x, y) => {
+  if (eggs.tap(x, y)) return;
+  const b = busAtScreen(x, y);
+  if (b) { openStop(null); select(b); return; }
+  const st = stops.at(camera, x, y);
+  if (st) { select(null); openStop(st); return; }
+  select(null); openStop(null);
+};
+
+// A stop's departures board: every bus still due in the next 75 minutes,
+// BC Transit's time beside bide's (whichever model won the last scored day).
+let stopOpen = null, stopData = null, stopTimer = 0;
+function openStop(st) {
+  clearTimeout(stopTimer);
+  stopOpen = st; stopData = null;
+  stops.select(st ? st.i : null);
+  $('stopcard').classList.toggle('hidden', !st);
+  document.body.classList.toggle('has-stop', !!st);
+  if (!st) return;
+  $('st-name').textContent = st.name;
+  $('st-id').textContent = `Stop ${st.id}`;
+  $('st-rows').innerHTML = '<li class="muted">Asking the recorder…</li>';
+  loadStop();
+}
+async function loadStop() {
+  const st = stopOpen;
+  if (!st) return;
+  stopTimer = setTimeout(loadStop, 20_000);
+  try {
+    const sent = Date.now() / 1000;
+    const d = await (await fetch('/api/stop?id=' + encodeURIComponent(st.id))).json();
+    if (stopOpen !== st) return;
+    stopData = d && { ...d, skew: d.now - sent };
+  } catch { /* keep the last board */ }
+  renderStop();
+}
+function renderStop() {
+  const d = stopData;
+  if (!stopOpen || !d) return;
+  const now = Date.now() / 1000 + d.skew;
+  const key = d.model?.best === 'bide' ? 'bide' : 'plus';
+  $('st-model').textContent = key === 'bide' ? 'bide' : 'bide+';
+  const rows = d.rows.filter((r) => Math.max(r.official, r[key]) > now - 30);
+  $('st-rows').innerHTML = rows.length
+    ? rows.map((r) => {
+      const t = buses.tripInfo(r.trip), rt = t ? buses.routes[t[0]] : null;
+      const short = rt?.short ?? r.route.replace('-VIC', '');
+      const head = t ? transit.headsigns[t[3]] : '';
+      const diff = Math.round((r[key] - r.official) / 60);
+      const tag = diff && Math.abs(diff) < 30 ? `<i class="${diff > 0 ? 'later' : 'sooner'}">${diff > 0 ? '+' : '−'}${Math.abs(diff)}</i>` : '';
+      return `<li><span class="badge sm" style="background:${rt?.color ?? '#777'}">${esc(short)}</span>` +
+        `<span class="hs" title="${esc(head)}">${esc(head || 'Bus')}</span>` +
+        `<span>${fmtMin(r.official, now)}</span><b>${fmtMin(r[key], now)}${tag}</b></li>`;
+    }).join('')
+    : '<li class="muted">No buses due here in the next 75 minutes.</li>';
+  $('st-note').textContent = d.off ? `BC Transit's feed clock is ${Math.abs(d.off / 3600)} h out right now; bide corrects it.` : '';
+}
+setInterval(renderStop, 1000);
+$('stopcard').querySelector('.close').onclick = () => openStop(null);
+
+// Visit bunched pairs in turn: fly to each and open its leading bus.
+let bunchIdx = 0;
+$('s-bunch-btn').onclick = () => {
+  const list = buses.bunches;
+  if (!list.length) return;
+  const [lead] = list[bunchIdx++ % list.length];
+  openStop(null);
+  select(lead);
+  controls.flyTo({ x: lead.x, z: -lead.y, dist: Math.min(controls.state.dist, 1800), polar: 0.95 }, 1600);
+};
 $('bus').querySelector('.close').onclick = () => select(null);
 $('b-follow').onclick = () => {
   if (!selected) return;
@@ -504,12 +601,20 @@ canvas.addEventListener('pointermove', (e) => {
   const b = busAtScreen(e.clientX, e.clientY);
   let g, w;
   const egg = !b && eggs.hover(e.clientX, e.clientY);
-  canvas.style.cursor = b || egg ? 'pointer' : '';
+  const st = !b && !egg && stops.at(camera, e.clientX, e.clientY, 10);
+  canvas.style.cursor = b || egg || st ? 'pointer' : '';
   if (egg) { tip.style.opacity = 0; return; }
+  if (st) {
+    tip.innerHTML = `<b>${esc(st.name)}</b><br><span class="tip-text" style="width:auto">Tap for the next buses</span>`;
+    tip.style.left = e.clientX + 'px'; tip.style.top = e.clientY + 'px'; tip.style.opacity = 1;
+    return;
+  }
   const q = !b && quakeAtScreen(e.clientX, e.clientY);
   if (b) {
     const r = buses.routes[b.route];
-    tip.innerHTML = `<b>${r?.short ?? ''}</b> ${b.headsign || r?.name || ''}`;
+    const twin = buses.bunchedWith(b);
+    tip.innerHTML = `<b>${r?.short ?? ''}</b> ${b.headsign || r?.name || ''}` +
+      (twin ? `<br><span class="tip-text" style="width:auto">Bunched: another ${r?.short ?? ''} ${Math.round(Math.abs(twin.s - b.s))} m ${twin.s > b.s ? 'ahead' : 'behind'}</span>` : '');
   } else if (q) {
     tip.innerHTML = `<b class="tip-kind">M${q.mag.toFixed(1)} earthquake · ${ago(q.time)}</b><br>` +
       `<span class="tip-text">${q.km} km ${q.bearing} of Victoria, ${q.depth} km deep${q.place ? ` · ${esc(q.place)}` : ''}</span>`;
@@ -588,6 +693,7 @@ function frame() {
   wind.update(dt, s.target, s.dist, mpp);
   quakes.update(dt, mpp);
   focus.update(dt, camera, mpp);
+  stops.update(dt, s.dist);
   streets.update(camera, s.target, s.dist);
   news.update(camera, s.dist);
   eggs.update(dt, camera, s.dist, mpp);
@@ -602,6 +708,7 @@ function frame() {
     $('s-buses').textContent = st.n || '–';
     $('s-standing').textContent = st.n ? st.standing : '–';
     $('s-late').textContent = st.withDelay ? st.late : '–';
+    $('s-bunch').textContent = st.n ? buses.bunches.length : '–';
     $('clock').textContent = new Date().toLocaleTimeString('en-CA', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
   }
   renderer.render(scene, camera);
@@ -623,4 +730,4 @@ renderer.setAnimationLoop(frame);
 // ?at=8.5 opens the map at 8:30 am instead of now; handy for sharing a moment.
 const at = new URLSearchParams(location.search).get('at');
 if (at != null && !Number.isNaN(+at)) setHour(+at);
-window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame, select, eggs };
+window.bide = { controls, setHour, time, buses, camera, scene, renderer, frame, select, eggs, stops, openStop };

@@ -73,6 +73,7 @@
         <label class="toggle"><input type="checkbox" id="t-news" checked /><span></span>Local news</label>
         <label class="toggle"><input type="checkbox" id="t-labels" checked /><span></span>Place names</label>
         <label class="toggle"><input type="checkbox" id="t-streets" checked /><span></span>Street names</label>
+        <label class="toggle"><input type="checkbox" id="t-stops" checked /><span></span>Bus stops</label>
       </details>
       <button id="home" class="ghost">Recentre on Victoria</button>
       <button id="guide-open" class="ghost guide-btn">What am I looking at?</button>
@@ -82,6 +83,7 @@
       <div class="stat"><b id="s-buses">–</b><span>buses on the road</span></div>
       <div class="stat"><b id="s-standing">–</b><span>standing room only</span></div>
       <div class="stat"><b id="s-late">–</b><span>3+ min behind</span></div>
+      <button id="s-bunch-btn" class="stat stat-btn" title="Two buses of the same route running nose to tail: riders wait twice as long, then two come at once. Click to visit each pair."><b id="s-bunch">–</b><span>bunched pairs <i class="go">→</i></span></button>
       <button id="score-open" class="score-teaser">
         <span class="dot"></span>
         <b>The honest scoreboard</b>
@@ -134,6 +136,15 @@
       <button id="b-follow" class="ghost">Follow this bus</button>
     </article>
 
+    <article id="stopcard" class="card hidden" aria-live="polite">
+      <button class="close" aria-label="Close">×</button>
+      <div class="bus-title" id="st-name"></div>
+      <div class="muted small" id="st-id"></div>
+      <div class="next-head st-head"><span>Next buses</span><span>BC Transit</span><span id="st-model">bide</span></div>
+      <ol id="st-rows" class="st-rows"></ol>
+      <p id="st-note" class="muted small"></p>
+    </article>
+
     <article id="score" class="card hidden">
       <button class="close" aria-label="Close">×</button>
       <h2>The honest scoreboard</h2>
@@ -169,7 +180,9 @@
         <dt><i class="sw bus"></i></dt><dd><b>A bus</b>, drawn where BC Transit's GPS says it is, gliding between reports. The white arrow on its roof points the way it's going.</dd>
         <dt><i class="sw dots"></i></dt><dd><b>Its colour</b> shows lateness, crowding or route: pick with <i>Colour buses by</i>. Grey means BC Transit has sent no prediction for that trip.</dd>
         <dt><i class="sw pulse"></i></dt><dd><b>A slow ring</b> under a bus means it's stopped at a stop.</dd>
+        <dt><i class="sw bunch"></i></dt><dd><b>A dashed amber ring</b>: the bus is <b>bunched</b>, running within 350 m of another bus on the same route and direction. Riders behind them wait twice as long, then two arrive together. The count is in the bottom-left card; click it to visit each pair.</dd>
         <dt><i class="sw ribbon"></i></dt><dd><b>Tap a bus</b> to light up its route ahead and its next four stops, with BC Transit's arrival time beside bide's own.</dd>
+        <dt><i class="sw stop"></i></dt><dd><b>Bus stops</b> appear as small dots once you're down at street level. <b>Tap one</b> for its departures board: every bus due in the next 75 minutes, BC Transit's time beside bide's. "+2" means bide expects it two minutes later than BC Transit says.</dd>
       </dl>
 
       <h3>The scoreboard <span class="tag">every morning</span></h3>
